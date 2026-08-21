@@ -1,0 +1,15 @@
+# 실행 중 생기는 목록 스냅샷·서명 — 세션 경로와 브랜치명이 들어 있으므로
+# 실수로라도 커밋되지 않게 막는다 (정상 실행 시엔 $TMPDIR 에 생긴다).
+.sig
+.wait
+.cols
+.pv
+*.sig
+*.wait
+*.cols
+*.pv
+
+# 로컬 Claude Code 프로젝트 설정 — 개인 절대경로가 박힌다
+.claude/
+
+.DS_Store

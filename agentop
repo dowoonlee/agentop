@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# agentop — AI 코딩 에이전트(Claude Code · cursor-agent · codex) 세션
+#            라이브 뷰어 + iTerm2 탭 점프
+#
+#   ↑↓  세션 선택      ⏎  해당 iTerm 탭으로 포커스 점프
+#   k  선택 세션 강제종료 (SIGTERM → 잔존 시 SIGKILL, 확인 받음)
+#   r  즉시 새로고침   q / ESC  종료      (목록은 ~2초마다 자동 갱신)
+#   p  상세 패널 토글 — 기본 2단(좌 목록 / 우 상세) ⇄ 목록만 (전체 폭; dir·워크트리·
+#      브랜치가 잘리지 않고 전부 나오며 dir 컬럼은 가장 긴 이름에 맞춰 정렬)
+#
+# top 기능: 프로젝트(git 루트)별로 묶어 '── <프로젝트> ──' 구분선. 세션 1개당 2줄 —
+#   1행 상태/ctx 사용률/디렉터리(워크트리면 ⑂이름), 2행 ⎇브랜치 · 모델 · 권한모드.
+#   footer 에 세션 집계(cpu/mem 합), preview 에 cpu/mem + 브랜치/워크트리 + 모델 +
+#   ctx 사용률(90%+ 빨강) + 서브에이전트/백그라운드 태스크 목록. 활동 중인
+#   서브에이전트(🤖N) · 백그라운드 shell(⚡N) · Monitor(🔭N) 는 목록 1행 state 뒤
+#   'act' 슬롯에 배지로 붙는다 — 앞 컬럼이 고정폭이라 항상 같은 열에 선다.
+#   waiting(HITL) 은 벨 + macOS 알림 (CC_TOP_NOTIFY=0 으로 끔).
+#
+# 데이터: `claude agents --json` + cursor-agent/codex CLI(iTerm2 화면 문구 매칭으로 HITL 감지)
+# 점프  : pid -> tty(ps) -> iTerm2 AppleScript(select+activate)
+set -uo pipefail
+
+# 자기 실행 경로 — 어디에 설치하든 lib/ 를 찾을 수 있게 스스로 위치를 구한다.
+# fzf 바인딩이 "$SELF --gen" 처럼 자신을 재실행하므로 절대경로여야 하고,
+# PATH 에 심볼릭 링크로 걸어 두는 설치법을 위해 링크를 끝까지 따라간다.
+SELF="${BASH_SOURCE[0]}"
+case "$SELF" in */*) ;; *) SELF="./$SELF" ;; esac
+while [[ -L "$SELF" ]]; do
+  _d=$(cd -P "${SELF%/*}" && pwd) || break
+  SELF=$(readlink "$SELF")
+  case "$SELF" in /*) ;; *) SELF="$_d/$SELF" ;; esac
+done
+SELF="$(cd -P "${SELF%/*}" && pwd)/${SELF##*/}"
+unset _d
+
+# ---------------------------------------------------------------------------
+# 모듈 — 기능별로 lib/ 에 나눠 두고 여기서 전부 읽어들인다. 서브커맨드별로
+#   필요한 것만 골라 읽을 수도 있지만, 전체를 읽어도 파싱 비용이 ~4ms 라
+#   (실측: 골라 읽기 이득 2ms 미만) 의존 관계를 단순하게 두는 쪽을 택했다.
+#   각 파일 첫 줄에 역할이 적혀 있다.
+# ---------------------------------------------------------------------------
+LIB="${SELF%/*}/lib"
+for _m in const core tasks gen gen-agents preview ui actions; do
+  . "$LIB/$_m.sh" || { echo "agentop: lib/$_m.sh 를 읽을 수 없습니다" >&2; exit 1; }
+done
+unset _m
+
+main() {
+  command -v fzf >/dev/null 2>&1 || { echo "fzf 가 필요합니다: brew install fzf" >&2; exit 1; }
+  command -v claude >/dev/null 2>&1 || { echo "claude CLI 를 찾을 수 없습니다" >&2; exit 1; }
+  # jq 가 없으면 gen 의 파이프가 에러 없이 빈 출력을 내 claude 세션 행이 통째로
+  # 사라진다 — 목록이 그냥 비어 보여 원인을 못 찾으므로 여기서 먼저 막는다.
+  command -v jq >/dev/null 2>&1 || { echo "jq 가 필요합니다: brew install jq" >&2; exit 1; }
+  if [[ "${TERM_PROGRAM:-}" != "iTerm.app" ]]; then
+    echo "주의: 현재 터미널이 iTerm2 가 아니라 탭 점프가 동작하지 않을 수 있습니다 (TERM_PROGRAM=${TERM_PROGRAM:-?})" >&2
+  fi
+
+  # 현재 터미널 폭 — 헤더 줄바꿈과 프로젝트 구분선 길이 계산에 함께 쓴다.
+  # gen_all 이 서브프로세스라 export 로 넘기고, 최초 스냅샷보다 먼저 잡아야 한다.
+  local cols header
+  cols=$(stty size </dev/tty 2>/dev/null | awk '{print $2}')
+  [[ "$cols" =~ ^[0-9]+$ ]] || cols=80
+  header=$(build_header "$cols")
+  export CC_TOP_COLS="$cols"
+
+  # 하루 넘게 손 안 댄 태스크 스캔 캐시 정리 — 끝난 세션 것이 계속 쌓이지 않게.
+  [[ -d "$TASK_CACHE" ]] && find "$TASK_CACHE" -type f -mtime +1 -delete 2>/dev/null
+
+  # 커서 추적용 임시 파일: cur=마지막 선택 sid, lst=현재 렌더된 목록 스냅샷
+  local cur lst
+  cur="${TMPDIR:-/tmp}/agentop-cur.$$"
+  lst="${TMPDIR:-/tmp}/agentop-lst.$$"
+  : > "$cur"
+  export CC_TOP_CUR="$cur" CC_TOP_LST="$lst"
+  # 경로를 즉시 박아넣음 — EXIT 시점엔 local cur/lst 가 스코프 밖이라 참조하면 unbound
+  trap "rm -f '$cur' '$lst' '$lst.sig' '$lst.wait' '$lst.cols' '$lst.pv'" EXIT
+  printf '%s' "$cols" > "$lst.cols"    # gen_all 이 읽는 현재 폭 (resize 시 갱신됨)
+
+  # 초기 목록 스냅샷(+서명) 미리 생성 — start 즉시 표시 & poll 첫 비교 기준
+  "$SELF" --gen > "$lst" 2>/dev/null
+  cut -d$'\037' -f1-5,7-9 "$lst" > "$lst.sig" 2>/dev/null
+  # 시작 시 이미 waiting 인 세션은 '신규 HITL' 알림 대상에서 제외(기준선 기록)
+  awk -F'\037' '$7=="waiting"{print $2}' "$lst" 2>/dev/null | sort > "$lst.wait"
+
+  # 사용자가 커서를 옮길 때만 sid 저장(reload 로 인한 top 리셋은 저장 안 함)
+  local save="execute-silent(printf '%s' {4} > \"$cur\")"
+
+  # 줄 기반 레코드(내부 줄바꿈=VT) → fzf 용 NUL 구분 멀티라인 아이템으로 변환.
+  # $lst 스냅샷과 awk/cut 소비자들은 원래의 줄 기반 포맷을 그대로 쓴다.
+  local TO0="tr '\\n\\013' '\\0\\n'"
+
+  fzf --ansi --reverse --no-sort --cycle \
+      --delimiter=$'\037' --with-nth=1 \
+      --read0 \
+      --prompt='agents ▸ ' \
+      --header="$header" \
+      --footer-border=line \
+      --info=inline \
+      --preview="$SELF --preview {2} {3} {4} {5} {6} {7} {8} {9}" \
+      --preview-window='right,52%,wrap,border-left' \
+      --bind="up:up+$save" \
+      --bind="down:down+$save" \
+      --bind="page-up:page-up+$save" \
+      --bind="page-down:page-down+$save" \
+      --bind="home:first+$save" \
+      --bind="end:last+$save" \
+      --bind="start:transform-footer($SELF --summary)+reload(cat \"$lst\" | $TO0)" \
+      --bind="load:transform-footer($SELF --summary)+transform-header($SELF --header \$FZF_COLUMNS)+reload($SELF --poll | $TO0)" \
+      --bind="result:transform($SELF --posof)" \
+      --bind="p:toggle-preview+execute-silent($SELF --toggle-preview)+transform-header($SELF --header \$FZF_COLUMNS)+reload($SELF --gen | tee \"$lst\" | $TO0)" \
+      --bind="r:reload($SELF --gen | tee \"$lst\" | $TO0)" \
+      --bind="k:execute($SELF --kill {2} {5} {9})+reload($SELF --gen | tee \"$lst\" | $TO0)" \
+      --bind="enter:execute-silent($SELF --jump {3})" \
+      --bind="q:abort" \
+      --bind="resize:execute-silent(printf %s \$FZF_COLUMNS > \"$lst.cols\")+transform-header($SELF --header \$FZF_COLUMNS)+reload($SELF --gen | tee \"$lst\" | $TO0)" \
+      < /dev/null
+}
+
+
+case "${1:-}" in
+  --gen)     gen_all ;;
+  --jump)    jump "${2:-}" ;;
+  --classify) cursor_classify ;;       # stdin=화면 텍스트 → 판정 결과 (디버깅/테스트용)
+  --classify-codex) codex_classify ;;  #   "          "     codex 판정 (디버깅/테스트용)
+  --kill)    shift; kill_session "$@" ;;
+  --header)  build_header "${2:-80}" ;;   # resize / p 토글 시 transform-header 가 호출
+  --toggle-preview) toggle_preview ;;      # p 토글 — 패널 표시 상태 파일 뒤집기
+  --posof)   posof ;;
+  --poll)    poll ;;
+  --summary) summary ;;
+  --preview) shift; preview "$@" ;;
+  -h|--help) sed -n '2,14p' "$SELF" | sed 's/^# \{0,1\}//' ;;
+  *)         main ;;
+esac
