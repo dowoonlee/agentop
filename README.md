@@ -69,15 +69,32 @@ Claude Code · cursor-agent · codex 세션을 함께 잡아 상태·컨텍스�
 
 ## 설치
 
+**어디에 clone해도 됩니다.** 본체가 자기 위치를 스스로 찾아 `lib/`를 읽으므로 정해진 경로가 없습니다.
+
 ```bash
-git clone https://github.com/dowoonlee/agentop.git ~/.dev/agentop
-echo "alias agentop='~/.dev/agentop/agentop'" >> ~/.zshrc
+git clone https://github.com/dowoonlee/agentop.git
+cd agentop
+./install.sh
 ```
 
-`lib/`를 스크립트 위치에서 찾고 심볼릭 링크도 따라가므로, PATH에 링크를 걸어도 됩니다.
+`install.sh`는 파일을 어디로 복사하지 않고, **clone한 그 자리**를 가리키는 심볼릭 링크만 PATH에 걸어 줍니다. 먼저 요구사항(macOS · fzf · claude · jq · iTerm2)을 점검해 빠진 게 있으면 알려 줍니다.
+
+| 옵션 | 동작 |
+|---|---|
+| (없음) | PATH 안의 쓰기 가능한 곳에 링크 (없으면 `~/.local/bin`) |
+| `--prefix DIR` | 링크를 걸 디렉터리 지정 |
+| `--alias` | 링크 대신 셸 설정(`.zshrc` 등)에 alias 추가 |
+| `--name NAME` | 실행 이름 변경 (기본 `agentop`) |
+| `--uninstall` | 설치한 링크 제거 |
+
+저장소를 다른 곳으로 옮겼다면 디렉터리째 옮긴 뒤 `./install.sh`를 다시 돌리면 링크가 새 위치를 가리킵니다.
+
+설치 스크립트를 쓰지 않아도 됩니다. 직접 실행하거나, 원하는 방식으로 걸어 두면 그만입니다.
 
 ```bash
-ln -s ~/.dev/agentop/agentop /usr/local/bin/agentop
+/path/to/agentop/agentop                      # 그냥 실행
+alias agentop='/path/to/agentop/agentop'      # alias
+ln -s /path/to/agentop/agentop ~/.local/bin/  # 심볼릭 링크 (이중 링크도 따라갑니다)
 ```
 
 ## 환경변수
@@ -100,6 +117,7 @@ transcript는 수십 MB까지 커지므로 꼬리 256KB만 훑고, 백그라운�
 
 ```
 agentop        진입점 — fzf 구성, 서브커맨드 디스패치
+install.sh     설치 — clone 위치를 가리키는 링크 생성
 lib/const.sh   상수 — 팔레트, 컬럼 폭, 화면 판정 패턴
 lib/core.sh    git/transcript/모델 헬퍼
 lib/tasks.sh   백그라운드 shell·Monitor 스캔 + 캐시
