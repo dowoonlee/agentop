@@ -21,8 +21,11 @@ wt_badge() {
 dir_cell() { printf '\036%s\035' "${1:-}"; }
 
 # ---------------------------------------------------------------------------
-# act_cell [서브에이전트수] [shell수] [monitor수] : 1행 활동 배지 슬롯.
-#   🤖서브에이전트 · ⚡백그라운드 shell · 🔭Monitor 를 state 와 ctx 사이에 모은다.
+# act_cell [서브에이전트수] [shell수] [monitor수] [서버수] : 1행 활동 배지 슬롯.
+#   🤖서브에이전트 · ⚡백그라운드 shell · 🔭Monitor · 🌐서버 를 state 와 ctx 사이에 모은다.
+#   🌐 를 맨 뒤에 둔 이유 — 앞의 셋은 '언젠가 끝나는 일' 이라 개수가 오르내리지만
+#   서버는 띄워 두면 계속 있다. 변동이 적은 것을 끝에 두면 앞자리가 흔들려도
+#   눈이 따라가는 자리가 덜 움직인다.
 #   앞의 icon(1)·state(5) 가 고정폭이라 슬롯 시작점이 항상 같은 자리 — 목록을
 #   세로로 훑으면 '지금 뭔가 돌고 있는 세션' 만 한 열에서 바로 잡힌다.
 #   (dir 뒤에 두던 시절엔 앞의 워크트리 배지가 행마다 길이가 달라 x 좌표가
@@ -37,12 +40,14 @@ dir_cell() { printf '\036%s\035' "${1:-}"; }
 #   숫자에만 색을 주는 건 이모지가 ANSI 를 안 먹기 때문 (const.sh 참조).
 # ---------------------------------------------------------------------------
 act_cell() {
-  local nag="${1:-}" nsh="${2:-0}" nmon="${3:-0}" s="" w=0
+  local nag="${1:-}" nsh="${2:-0}" nmon="${3:-0}" nsrv="${4:-0}" s="" w=0
   [[ "$nsh"  =~ ^[0-9]+$ ]] || nsh=0
   [[ "$nmon" =~ ^[0-9]+$ ]] || nmon=0
+  [[ "$nsrv" =~ ^[0-9]+$ ]] || nsrv=0
   [[ -n "$nag" ]] && { s+="${AG_EMOJI}${YELLOW}${nag}${RESET}";  w=$(( w + 2 + ${#nag} )); }
   (( nsh  > 0 )) && { s+="${SH_EMOJI}${SHC}${nsh}${RESET}";      w=$(( w + 2 + ${#nsh} )); }
   (( nmon > 0 )) && { s+="${MON_EMOJI}${MONC}${nmon}${RESET}";   w=$(( w + 2 + ${#nmon} )); }
+  (( nsrv > 0 )) && { s+="${SRV_EMOJI}${SRVC}${nsrv}${RESET}";   w=$(( w + 2 + ${#nsrv} )); }
   printf '%s%s%s\037%s' "$ACT_L" "$s" "$ACT_R" "$w"
 }
 
@@ -123,6 +128,11 @@ tx_scan() {
 #   13 worktree 는 행 중복 판정용 — 실효 cwd 가 링크된 워크트리면 그 이름, 아니면 빈 값.
 # ---------------------------------------------------------------------------
 gen() {
+  # 세션 보드 — 겹침 수 맵을 루프 전에 한 번만 만든다. 세션마다 보드를 다시 훑으면
+  # 2초 폴링에서 세션 수만큼 프로세스가 늘어난다 (board_badge 는 이 문자열만 본다).
+  local BOARD_MAP; BOARD_MAP=$(board_map)
+  # 로컬 서버 — 리스닝 포트 맵도 같은 이유로 루프 전 1회 (lsof+ps 각 1번, ~0.15초).
+  local SRV_MAP; SRV_MAP=$(srv_map)
   # 필드 구분자는 US(0x1f). 탭은 bash read 에서 빈 필드가 병합되어 못 씀.
   claude agents --json 2>/dev/null | jq -r '
     [ .[] | select(.kind=="interactive") ]
@@ -130,14 +140,21 @@ gen() {
     [ (.pid|tostring), (.status // "?"), (.waitingFor // ""), .cwd,
       (.name // ""), (.sessionId // "-"), ((.startedAt // 0)|tostring) ] | join("")
   ' | while IFS=$'\037' read -r pid status waiting cwd name sid started; do
-        # tty + cpu + rss 를 한 번의 ps 호출로. cpu 는 정수%(리스트 표시·서명용),
+        # tty + cpu + rss + stat 을 한 번의 ps 호출로. cpu 는 정수%(리스트 표시·서명용),
         # rss 는 MB(요약/preview 용). cpu 정수화로 idle(0%) 은 서명 안정 → 깜빡임 없음.
-        local ptty pcpu prss
-        read -r ptty pcpu prss < <(ps -o tty=,%cpu=,rss= -p "$pid" 2>/dev/null)
+        local ptty pcpu prss pstat
+        read -r ptty pcpu prss pstat < <(ps -o tty=,%cpu=,rss=,stat= -p "$pid" 2>/dev/null)
         tty="${ptty:-}"
         [[ -z "$tty" || "$tty" == "??" ]] && tty="-"
         local cpu="${pcpu%%.*}"; [[ "$cpu" =~ ^[0-9]+$ ]] || cpu=0
         local rssmb=$(( ${prss:-0} / 1024 ))
+        # 정지(ps stat 이 T) 프로세스는 --json 이 마지막으로 보고된 status(대개 idle)를
+        # 그대로 주지만, 실물은 SIGTSTP 로 멈춰 자식(MCP 서버·git·좀비)을 물고 남은
+        # 잔재다. 워크트리 진입처럼 세션이 프로세스를 갈아탈 때 원본이 이 꼴로 남으면
+        # 같은 sessionId 가 목록에 두 줄로 선다 — ps 의 실물 상태로 덮어써 구분한다.
+        # waitingFor 도 함께 지운다: 멈춘 세션의 대기 사유는 응답할 사람이 없어
+        # HITL 알림·통계에 섞이면 안 된다.
+        [[ "$pstat" == T* ]] && { status="stopped"; waiting=""; }
         dir=$(basename "$cwd" 2>/dev/null)
         # --json 은 waitingFor 를 안 주므로 세션 파일에서 폴백 (HITL 상세 사유)
         [[ -z "$waiting" ]] && waiting=$(jq -r '.waitingFor // ""' \
@@ -146,6 +163,7 @@ gen() {
           busy)    icon="${YELLOW}●${RESET}"; st="busy" ;;
           waiting) icon="${RED}◐${RESET}";    st="wait" ;;
           idle)    icon="${GRAY}○${RESET}";   st="idle" ;;
+          stopped) icon="${STOPC}⊘${RESET}";  st="stop" ;;
           *)       icon="${DIM}·${RESET}";    st="${status:0:4}" ;;
         esac
         # 세션명 컬럼은 뺐다(디렉터리·프로젝트 구분선과 중복). 이 자리는 워크트리
@@ -153,6 +171,9 @@ gen() {
         lab=""
         [[ -n "$waiting" ]] && lab="← $waiting"
         [[ "$tty" == "-" ]] && lab="${lab:+$lab }(detached)"
+        # 정지 세션은 st 컬럼('stop')만으로는 '무엇을 해야 하나' 가 안 나온다 —
+        # 살릴 수 없는 잔재라는 것과 정리 수단(k)까지 한 줄에 적는다.
+        [[ "$status" == stopped ]] && lab="${lab:+$lab }(정지됨 — k 로 정리)"
         # transcript 경로는 model/mode/ctx/실효cwd 공용이라 한 번만 계산.
         local tx mdl pm ecwd toks pretty badge ctxc
         tx=$(tx_of "$cwd" "$sid")
@@ -177,10 +198,18 @@ gen() {
         wtb=$(wt_badge "$ecwd")
         # 활동 배지(🤖⚡🔭)는 state 뒤 고정 슬롯으로 — act_cell 주석 참조.
         # dir 뒤에 남는 건 워크트리 배지 → 상태 사유 순.
-        local nag nsh nmon actc actw tail1; nag=$(sub_live "$tx")
+        local nag nsh nmon nsrv actc actw tail1 bbadge; nag=$(sub_live "$tx")
         IFS=$'\037' read -r nsh nmon < <(tasks_live "$tx" "$(epoch_iso "$started")")
-        IFS=$'\037' read -r actc actw < <(act_cell "$nag" "$nsh" "$nmon")
+        # 서버 수는 transcript 가 아니라 포트 맵에서 온다 — 이 세션 pid 를 조상으로
+        # 두고 리스닝 중인 프로세스의 개수다 (servers.sh 주석 참조).
+        local sports; sports=$(srv_ports "$pid")
+        nsrv=$(srv_count "$sports")
+        IFS=$'\037' read -r actc actw < <(act_cell "$nag" "$nsh" "$nmon" "$nsrv")
+        # 보드 배지(⚠N)는 워크트리 배지 뒤 — '어디서 일하는지' 다음에 '누구와
+        # 겹치는지' 가 오는 순서다. 겹침이 없으면 빈 값이라 자리를 안 차지한다.
+        bbadge=$(board_badge "$sid")
         tail1="$wtb"
+        [[ -n "$bbadge" ]] && tail1="${tail1:+$tail1 }$bbadge"
         if [[ "$status" == waiting ]]; then
           # HITL 세션 — 행 강조: ◐ WAIT 배지(icon+state 자리) + 굵은 빨강 텍스트.
           # 배지가 8칸이라 활동 슬롯을 바로 이어 붙이면 뒤 컬럼이 일반 행과 같은 열에 선다.
@@ -188,16 +217,22 @@ gen() {
             "$HL" "$RESET" "$actc" "$ctxc" "${BOLD}${RED}" "$(dir_cell "$dir")" "$RESET" \
             "${tail1:+$tail1 }" "${BOLD}${RED}" "$lab" "$RESET")
         else
+          # 정지 세션은 dir·사유를 한 톤 죽여 살아있는 행들 사이에서 눈에 덜 걸리게
+          # 한다 (숨기지는 않는다 — 자식 프로세스를 물고 멈춰 있는 상태라 보여야 한다).
+          local dirc="$BLUE" labc="$GRAY"
+          [[ "$status" == stopped ]] && { dirc="$STOPC"; labc="$STOPC"; }
           col1=$(printf '%s %-5s %s%s %s%s%s %s%s%s%s' \
-            "$icon" "$st" "$actc" "$ctxc" "$BLUE" "$(dir_cell "$dir")" "$RESET" \
-            "${tail1:+$tail1 }" "$GRAY" "$lab" "$RESET")
+            "$icon" "$st" "$actc" "$ctxc" "$dirc" "$(dir_cell "$dir")" "$RESET" \
+            "${tail1:+$tail1 }" "$labc" "$lab" "$RESET")
         fi
         col1="$col1$VT$(meta_line "$ecwd" "$pretty" "$badge")"
-        # 15~18 은 헤더 통계(stats)용 원자료 — 배지 개수와 모델은 col1 에 렌더만 돼
+        # 15~19 는 헤더 통계(stats)용 원자료 — 배지 개수와 모델은 col1 에 렌더만 돼
         # 있어 다시 못 뽑으므로 여기서 같이 실어 보낸다. 렌더에는 안 쓴다.
-        printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n' \
+        # 20(포트 목록)은 preview 몫이다 — 별개 프로세스라 SRV_MAP 을 못 물려받는데,
+        # 여기서 실어 보내면 패널을 그릴 때마다 lsof+ps 를 다시 도는 0.15초가 빠진다.
+        printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n' \
           "$col1" "$pid" "$tty" "$sid" "$cwd" "$started" "$status" "$waiting" "$name" "$cpu" "$rssmb" "$proj" "$wt" "$actw" \
-          "${nag:-0}" "${nsh:-0}" "${nmon:-0}" "$pretty"
+          "${nag:-0}" "${nsh:-0}" "${nmon:-0}" "$pretty" "${nsrv:-0}" "${sports:-}"
      done
 }
 
@@ -211,6 +246,13 @@ gen() {
 #
 #   waiting(HITL) 행을 맨 위로 끌어올리는 동작은 없다 — 대기 세션도 자기 프로젝트
 #   자리를 지킨다. 인지 수단은 행 강조(◐ WAIT 빨강 배지) + 벨/macOS 알림이다.
+#
+#   반대로 정지(⊘ stop) 행은 그룹 안에서 맨 아래로 내린다. 살아있는 세션과 달리
+#   돌아올 일이 없는 잔재라, 위에 남겨 두면 그 프로젝트에서 지금 뭐가 도는지
+#   보려고 눈이 매번 그 줄을 건너뛰어야 한다. 지우지 않는 이유는 자식 프로세스
+#   (MCP 서버·shell)를 물고 멈춰 있어서다 — 정리할 대상이 있다는 건 보여야 한다.
+#   그룹 자체의 순서(처음 등장 위치)는 그대로라, 정지 세션만 남은 프로젝트도
+#   자기 자리를 지킨다.
 #
 #   같은 그룹 안에서 화면에 보이는 dir 이 겹치는 행에는 pid(#1234)를 덧붙인다.
 #   1행에 세션을 특정하는 값이 없어서(dir·워크트리·브랜치·모델 전부 디렉터리
@@ -234,8 +276,10 @@ gen_all() {
     NF {
       k=$12
       if (!(k in seen)) { seen[k]=++g; ord[g]=k }
-      m=++cnt[k]
-      rows[k,m]=$0
+      # 살아있는 행(n)과 정지 행(s)을 따로 담아 END 에서 n → s 순으로 뽑는다.
+      # 한 배열에 담고 나중에 정렬하지 않는 이유는 awk 배열이 순서를 안 지켜서다.
+      if ($7=="stopped") rows[k,"s" ++scnt[k]]=$0
+      else               rows[k,"n" ++ncnt[k]]=$0
       # 같은 자리에 보이는 행끼리 pid 를 덧붙이는 판정은 fit_dir 이 한다 — 그 판정에
       # 쓰는 dir 은 잘린 뒤 화면에 보이는 값이라, 폭이 정해진 뒤에야 비교가 된다.
     }
@@ -245,8 +289,10 @@ gen_all() {
         pad=AV-length(name)-4; if (pad<0) pad=0
         rule=""; for (z=0; z<pad; z++) rule=rule "━"
         hdr=RULE "━━" Z " " NAME name Z " " RULE rule Z VT
-        for (m=1; m<=cnt[k]; m++)
-          print (m==1 ? hdr : "") rows[k,m]
+        # 구분선은 그룹의 첫 행에 얹는다 — 정지 세션만 있는 그룹이면 그 행이 첫 행이다.
+        first=1
+        for (m=1; m<=ncnt[k]; m++) { print (first ? hdr : "") rows[k,"n" m]; first=0 }
+        for (m=1; m<=scnt[k]; m++) { print (first ? hdr : "") rows[k,"s" m]; first=0 }
       }
     }' | fit_dir
 }

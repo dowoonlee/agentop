@@ -1,5 +1,5 @@
 # preview.sh — 우측 상세 패널 — 선택 세션의 cpu/mem·git·모델·컨텍스트 사용률과
-#   서브에이전트/백그라운드 태스크 목록을 그린다.
+#   서브에이전트/백그라운드 태스크/로컬 서버 목록을 그린다.
 #
 # agentop 이 source 하는 모듈이다 (단독 실행 아님). 상수·헬퍼는 agentop 프로세스
 # 하나 안에서 공유되므로, 여기 정의는 다른 모듈에서 그대로 보인다.
@@ -11,6 +11,9 @@ preview() {
   local pid="${1:-}" tty="${2:-}" sid="${3:-}" cwd="${4:-}" started="${5:-0}"
   local status="${6:-}" waiting="${7:-}" name="${8:-}"
   local title="${name:-$(basename "$cwd" 2>/dev/null)}"
+
+  # 활동 모드('p' 세 번째)는 화면을 통째로 쓰는 다른 그림이다 — 여기서 갈라진다.
+  [[ "$(preview_mode)" == 2 ]] && { activity_view "$@"; return 0; }
 
   printf '%s%s%s\n' "$BLUE" "$title" "$RESET"
   printf '%s\n' "${DIM}────────────────────────────────────────${RESET}"
@@ -28,6 +31,11 @@ preview() {
   else
     local stline="$status"
     [[ -n "$waiting" ]] && stline="$status  ${RED}← $waiting${RESET}"
+    # 정지 세션은 'stopped' 만 봐선 다시 깨울 수 있는 상태로 읽힌다. 무엇 때문에
+    # 멈췄고 왜 SIGTERM 이 안 통하는지(정지 중엔 시그널이 큐에만 쌓인다)까지 적어야
+    # 여기서 바로 k 를 누를 판단이 선다.
+    [[ "$status" == stopped ]] && \
+      stline="${STOPC}⊘ stopped${RESET}  ${DIM}(SIGTSTP 로 멈춘 잔재 — SIGTERM 안 통함, k 로 정리)${RESET}"
     printf '%sstatus %s %s\n' "$GRAY" "$RESET" "$stline"
   fi
   printf '%scwd    %s %s\n' "$GRAY" "$RESET" "$cwd"
@@ -110,6 +118,11 @@ preview() {
 
   subagents_block "$tx"
   tasks_block "$tx" "$(epoch_iso "$started")"
+  # 서버 섹션은 태스크 바로 뒤 — ⚡ 로 띄운 것이 어느 포트로 열렸는지가 이어서
+  # 읽히는 자리다. compose 조회는 실효 cwd 기준이라 ecwd 를 넘긴다(시작 cwd 가
+  # 아니다 — 워크트리에서 띄운 스택은 그 워크트리 경로가 라벨에 박힌다).
+  srv_block "$pid" "$ecwd"
+  board_block "$sid" "$cwd"
 
   local last
   last=$(jq -rs '
@@ -226,23 +239,31 @@ subagents_block() {
   (( total > SUB_MAX )) && printf '  %s… 외 %s개%s\n' "$DIM" "$(( total - SUB_MAX ))" "$RESET"
 }
 # ---------------------------------------------------------------------------
-# tasks_block <transcript> [since(ISO)] : preview 하단 '이 세션이 띄운 백그라운드
-#   태스크' 섹션. 1열 아이콘이 상태 겸 종류다 — 실행 중이면 종류 아이콘
-#   (▶ shell / ◉ monitor)에 색을 주고, 끝났으면 결과 표시(✓ 정상 / ✗ 실패 /
-#   ⊘ 강제종료·타임아웃)로 바꾼다. since 보다 먼저 시작한 '실행 중' 은 이전
-#   프로세스가 띄웠던 것이라 이미 죽었으므로 ⊘ 로 내린다 (epoch_iso 주석 참고).
-#   age 는 '마지막 활동' 이 아니라 '시작 후 경과' — 실행 중인 태스크는 얼마나
-#   오래 물고 있는지가, 끝난 태스크는 언제 것인지가 알고 싶은 값이다.
+# tasks_block <transcript> [since(ISO)] : preview 하단 '이 세션이 지금 돌리는
+#   백그라운드 태스크' 섹션. 1열 아이콘이 종류다 — ▶ shell / ◉ monitor.
+#
+#   끝난 것은 싣지 않는다. 이 섹션이 답하는 질문은 '지금 무엇이 돌고 있나' 이고,
+#   완료·실패·강제종료는 그 답이 아니라 지나간 기록이다. 세션 하나가 하루에
+#   태스크를 수십 개 띄우면 끝난 것들이 목록을 다 먹어, 정작 살아 있는 하나가
+#   상한에 밀려 안 보이는 일이 생긴다 (실측: 9개 중 실행 중 0개인데 9줄).
+#   결과가 궁금하면 그 세션 탭으로 넘어가면 된다 — 여기는 현황판이다.
+#
+#   제외 대상은 목록 1행의 ⚡ 배지(tasks_live)와 같은 기준이다. since 보다 먼저
+#   시작한 '실행 중' 도 뺀다 — 이전 프로세스가 띄웠던 것이라 부모가 죽으면서
+#   같이 끝났고, 종료 기록만 안 남았을 뿐이다 (epoch_iso 주석 참고).
+#
+#   age 는 '시작 후 경과' — 얼마나 오래 물고 있는지다.
 #   최신 것이 위로 오도록 뒤집어 찍는다 (subagents_block 과 같은 정렬).
 # ---------------------------------------------------------------------------
 tasks_block() {
-  local tx="${1:-}" since="${2:-}" rows total run
+  local tx="${1:-}" since="${2:-}" rows run
   [[ -n "$tx" ]] || return 0
   rows=$(tasks_scan "$tx")
   [[ -n "$rows" ]] || return 0
-  total=$(printf '%s\n' "$rows" | wc -l | tr -d ' ')
-  run=$(printf '%s\n' "$rows" | awk -F'\037' -v since="$since" \
-    '$2=="run" && (since=="" || $3=="" || $3>=since){n++} END{print n+0}')
+  rows=$(printf '%s\n' "$rows" | LC_ALL=C awk -F'\037' -v since="$since" \
+    '$2 == "run" && (since == "" || $3 == "" || $3 >= since)')
+  [[ -n "$rows" ]] || return 0        # 다 끝났으면 섹션째 빠진다
+  run=$(printf '%s\n' "$rows" | wc -l | tr -d ' ')
 
   # 설명은 한 행에 딱 맞게 자른다 (subagents_block 과 같은 이유·같은 폭 계산)
   local pw dmax
@@ -251,24 +272,15 @@ tasks_block() {
   dmax=$(( pw - TASK_PREFIX_W ))
   (( dmax < 12 )) && dmax=12
 
-  printf '\n%stasks  %s %s개' "$GRAY" "$RESET" "$total"
-  (( run > 0 )) && printf '   %s● %s개 실행중%s' "$YELLOW" "$run" "$RESET"
-  printf '\n'
+  printf '\n%stasks  %s %s%s개 실행중%s\n' "$GRAY" "$RESET" "$YELLOW" "$run" "$RESET"
 
   local now shown=0 k st ts ds mark kc age
   now=$(date +%s)
   while IFS=$'\037' read -r k st ts ds; do
     (( shown >= TASK_MAX )) && break
     shown=$(( shown + 1 ))
-    if [[ "$k" == mon ]]; then kc="$MONC"; else kc="$SHC"; fi
-    # 이전 프로세스가 띄운 미완결 태스크는 종료 기록이 없을 뿐 이미 죽었다
-    [[ "$st" == run && -n "$since" && -n "$ts" && "$ts" < "$since" ]] && st="stale"
-    case "$st" in
-      run)       mark="${kc}$([[ "$k" == mon ]] && printf '%s' "$MON_ICON" || printf '%s' "$SH_ICON")${RESET}" ;;
-      completed) mark="${DIM}✓${RESET}"; kc="$DIM" ;;
-      failed)    mark="${RED}✗${RESET}";  kc="$DIM" ;;
-      *)         mark="${DIM}⊘${RESET}"; kc="$DIM" ;;
-    esac
+    if [[ "$k" == mon ]]; then kc="$MONC"; mark="${kc}${MON_ICON}${RESET}"
+    else                      kc="$SHC";  mark="${kc}${SH_ICON}${RESET}"; fi
     age=""
     local ep; ep=$(iso_epoch "$ts")
     [[ "$ep" =~ ^[0-9]+$ ]] && age=$(age_short $(( now - ep > 0 ? now - ep : 0 )))
@@ -279,6 +291,72 @@ tasks_block() {
       "$kc" "$TASK_KIND_W" "$([[ "$k" == mon ]] && printf 'monitor' || printf 'shell')" "$RESET" "$ds"
   done < <(printf '%s\n' "$rows" | tail -r)
 
-  (( total > TASK_MAX )) && printf '  %s… 외 %s개%s\n' "$DIM" "$(( total - TASK_MAX ))" "$RESET"
+  (( run > TASK_MAX )) && printf '  %s… 외 %s개%s\n' "$DIM" "$(( run - TASK_MAX ))" "$RESET"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# activity_view <preview 와 같은 인자> : 'p' 세 번째 모드 — 이 세션이 지금
+#   무엇을 돌리고 무슨 포트를 물고 있는지만 화면 가득 편다.
+#
+#   2단 패널과 다른 점은 둘이다. 첫째, 나열 상한을 사실상 푼다 — 좁은 패널에서
+#   '외 N개' 로 접던 것들이 여기서는 알고 싶은 값 그 자체다. 둘째, 머리글을
+#   한 줄로 줄인다 — cwd·모델·ctx 는 2단에서 이미 보이고, 이 화면의 세로 공간은
+#   태스크와 포트에 주는 편이 낫다.
+#
+#   보드(🗂)와 마지막 지시(💬)는 뺐다. 파일 편집 이력과 사용자 지시는 '지금
+#   돌고 있는 것' 이 아니라 성격이 다르고, 둘을 같이 담으면 이 화면의 초점이
+#   흐려진다 — 그쪽은 2단 패널이 맡는다.
+#
+#   상한 해제는 지역 변수로 한다. bash 는 동적 스코프라 여기서 잡은 값이
+#   아래에서 부르는 *_block 들에 그대로 보인다 (전역을 건드리지 않으므로
+#   같은 프로세스의 다른 호출에 새어나가지 않는다).
+# ---------------------------------------------------------------------------
+activity_view() {
+  local pid="${1:-}" tty="${2:-}" sid="${3:-}" cwd="${4:-}" started="${5:-0}"
+  local status="${6:-}" waiting="${7:-}" name="${8:-}"
+  local TASK_MAX=200 SRV_BLK_MAX=200 SUB_MAX=50
+
+  local tx proj ecwd wt br title stc
+  title="${name:-$(basename "$cwd" 2>/dev/null)}"
+  tx=$(tx_of "$cwd" "$sid")
+  proj=$(git_root "$cwd"); proj="${proj:-$cwd}"
+  ecwd=$(cwd_of "$tx")
+  case "$ecwd" in "$proj"|"$proj"/*) ;; *) ecwd="$cwd" ;; esac
+  wt=$(git_worktree "$ecwd")
+  br=$(git_branch "$ecwd")
+
+  case "$status" in
+    busy)    stc="${YELLOW}● busy${RESET}" ;;
+    waiting) stc="${RED}◐ WAIT${RESET}" ;;
+    idle)    stc="${GRAY}○ idle${RESET}" ;;
+    stopped) stc="${STOPC}⊘ stop${RESET}" ;;
+    *)       stc="${DIM}${status:-?}${RESET}" ;;
+  esac
+
+  # 머리글 한 줄 — 누구의 화면인지만 밝힌다. 뒤는 전부 활동 내역이다.
+  printf '%s%s%s  %s#%s%s  %s' "$BLUE" "$title" "$RESET" "$GRAY" "$pid" "$RESET" "$stc"
+  [[ -n "$wt" ]] && printf '  %s⑂ %s%s' "$WTC" "$wt" "$RESET"
+  [[ -n "$br" ]] && printf "  %s⎇ %s%s" "$GREENB" "$br" "$RESET"
+  [[ -n "$waiting" ]] && printf '  %s← %s%s' "$RED" "$waiting" "$RESET"
+  printf '\n'
+
+  # cursor/codex 는 transcript 가 없어 태스크를 못 읽는다 — 포트는 그래도 본다.
+  if [[ "$sid" == cursor:* || "$sid" == codex:* ]]; then
+    printf '%s\n' "${DIM}(태스크 내역은 Claude Code 세션에서만 읽을 수 있습니다)${RESET}"
+    srv_block "$pid" "$ecwd"
+    return 0
+  fi
+
+  # 세 섹션을 한 화면에 — 없으면 각자 조용히 빠지므로, 전부 비면 아래에서 알린다.
+  local out
+  out=$( subagents_block "$tx"
+         tasks_block "$tx" "$(epoch_iso "$started")"
+         srv_block "$pid" "$ecwd" )
+  if [[ -n "$out" ]]; then
+    printf '%s\n' "$out"
+  else
+    printf '\n%s이 세션은 지금 돌리는 것도, 물고 있는 포트도 없습니다.%s\n' "$DIM" "$RESET"
+  fi
   return 0
 }

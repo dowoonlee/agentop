@@ -215,26 +215,57 @@ git_worktree() {
 }
 
 # ---------------------------------------------------------------------------
-# preview_shown : 상세(preview) 패널이 현재 보이는지. 'p' 토글이 $lst.pv 를
-#   뒤집고(1=표시, 0=목록만) 여기서 읽는다. 파일 없음 = 기본값(표시).
+# preview_mode : 화면 배치 상태. 'p' 가 $lst.pv 를 돌리고 여기서 읽는다.
+#     1 = 2단   (좌 목록 / 우 상세)          — 기본값
+#     0 = 목록만 (전체 폭)
+#     2 = 활동   (위 상세 전체폭 / 아래 목록) — 서버·태스크를 상한 없이 편다
 #   fzf 도 FZF_PREVIEW_COLUMNS 를 내보내지만 실행 시점에 따라 토글 전 값일
 #   수 있어, 상태는 파일 하나로 단일화한다 (백그라운드 --poll 도 같은 파일).
-# main_width <cols> : 목록(메인 영역) 가용 폭. 패널이 있으면 전체의 ~48%
-#   (우측 preview 52% 제외), 없으면 전체 폭. gen_all 의 구분선 길이와
-#   build_header 의 도움말 줄바꿈이 같은 값을 보게 한 곳에 모았다.
+#
+# preview_shown : 패널이 보이는지 (1·2 는 보임, 0 은 숨김).
+#
+# main_width <cols> : 목록(메인 영역) 가용 폭. 2단일 때만 전체의 ~48% 고,
+#   목록만과 활동은 전체 폭이다 — 활동은 위아래로 나누므로 목록이 가로를 다 쓴다.
+#   gen_all 의 구분선 길이와 build_header 의 도움말 줄바꿈이 같은 값을 보게
+#   한 곳에 모았다.
 # ---------------------------------------------------------------------------
-preview_shown() { [[ "$(cat "${CC_TOP_LST:-}.pv" 2>/dev/null)" != 0 ]]; }
+preview_mode() {
+  local m; m=$(cat "${CC_TOP_LST:-}.pv" 2>/dev/null)
+  case "$m" in 0|1|2) printf '%s' "$m" ;; *) printf 1 ;; esac
+}
+
+preview_shown() { [[ "$(preview_mode)" != 0 ]]; }
 
 main_width() {
   local cols="${1:-80}"
   [[ "$cols" =~ ^[0-9]+$ ]] || cols=80
-  if preview_shown; then echo $(( cols * 48 / 100 )); else echo "$cols"; fi
+  case "$(preview_mode)" in
+    1) echo $(( cols * 48 / 100 )) ;;
+    *) echo "$cols" ;;
+  esac
 }
 
-# --toggle-preview : 패널 표시 상태 파일을 뒤집는다. fzf 의 toggle-preview 액션과
-#   같은 바인딩 체인에서 연달아 불리므로 둘은 항상 같은 상태를 가리킨다.
+# --toggle-preview : 'p' — 배치를 2단 → 목록만 → 활동 → 2단 으로 돌린다.
+#   fzf 쪽 창 조작은 --pvaction 이 따로 낸다 (액션 문자열은 상태를 바꾼 뒤에
+#   읽어야 하므로 바인딩에서 이 함수보다 뒤에 온다).
 toggle_preview() {
   local f="${CC_TOP_LST:-}.pv"
   [[ -n "${CC_TOP_LST:-}" ]] || return 0
-  if preview_shown; then printf 0 > "$f"; else printf 1 > "$f"; fi
+  case "$(preview_mode)" in
+    1) printf 0 > "$f" ;;
+    0) printf 2 > "$f" ;;
+    *) printf 1 > "$f" ;;
+  esac
+}
+
+# --pvaction : 지금 상태에 맞는 fzf 창 액션 문자열. transform 바인딩이 이걸
+#   그대로 실행한다. reload·헤더 갱신까지 여기서 만들지 않는 이유 — 그쪽은
+#   따옴표가 겹겹이라 문자열로 조립하면 깨지기 쉽고, 바인딩에 고정으로 두면
+#   모드와 무관하게 늘 같은 일이라 나눠 두는 편이 안전하다.
+pvaction() {
+  case "$(preview_mode)" in
+    0) printf 'hide-preview' ;;
+    1) printf 'show-preview+change-preview-window(%s)' "$PV_WIN_SPLIT" ;;
+    2) printf 'show-preview+change-preview-window(%s)' "$PV_WIN_ACT" ;;
+  esac
 }

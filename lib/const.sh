@@ -17,6 +17,9 @@ CYAN=$'\e[38;5;80m'             # cursor-agent 구분색
 MAGENTA=$'\e[38;5;176m'         # codex 구분색
 GREENB=$'\e[38;5;114m'          # git 브랜치 표시색
 WTC=$'\e[38;5;103m'             # 워크트리 배지색 (상태색·모델색과 안 겹치는 톤)
+STOPC=$'\e[38;5;241m'           # 정지(ps stat=T) 세션 행 색. 살아있는 행보다 확실히 죽이되
+                                #   DIM(238)보다는 읽히는 톤 — 잔재를 지우지 않고 남기는
+                                #   자리라 '있다는 건 보이되 눈이 먼저 가지는 않는' 밝기다.
 # 모델 배지 색 — 상태색(노랑/빨강/파랑)과 겹치지 않는 은은한 톤
 M_OPUS=$'\e[38;5;140m'          # 연보라
 M_SONNET=$'\e[38;5;108m'        # 세이지
@@ -119,3 +122,45 @@ CUR_TAIL=25
 CDX_PAT_PERM='Allow Codex to |Approve app tool call\?|Yes, proceed|tell Codex what to do differently'
 CDX_PAT_BUSY='Working \([0-9]+|[Ee]sc to interrupt|to interrupt and send'
 CDX_TAIL=25
+
+# ---- 화면 배치 ('p' 가 도는 세 모드) ----
+# 2단은 좌우로 나누고(목록이 세로로 길다), 활동은 위아래로 나눈다 — 서버·태스크는
+# 세로로 긴 표라 가로 폭보다 줄 수가 아쉽고, 위아래로 나누면 상세가 터미널 전체
+# 폭을 써서 컨테이너 이름·명령 설명이 안 잘린다.
+#
+# 활동 모드에서 목록은 위다(preview 가 down). 세 모드를 오가도 세션 목록이 늘 화면
+# 같은 자리에서 시작해야 눈이 그 줄을 다시 찾지 않는다 — 2단·목록만에서 목록이
+# 위에서 내려오는데 활동에서만 아래로 밀리면, 모드를 바꿀 때마다 보던 세션을
+# 눈으로 다시 더듬게 된다.
+PV_WIN_SPLIT='right,52%,wrap,border-left'
+PV_WIN_ACT='down,72%,wrap,border-top'
+
+# ---- 로컬 서버 (세션이 띄운 리스닝 포트) ----
+# 백그라운드 shell(⚡)과 나눠 두는 이유: 테스트·CI 대기처럼 끝나기를 기다리는
+# 태스크와, dev 서버처럼 '떠 있는 것 자체가 상태' 인 것은 알고 싶은 값이 다르다.
+# 전자는 '몇 개 도나', 후자는 '어느 포트로 열렸나' 다. 그래서 판정 근거도 다르게
+# 둔다 — ⚡ 는 transcript(기록), 🌐 는 lsof(실물)다. 서버가 죽으면 포트가 닫혀
+# 배지가 바로 사라지므로, transcript 기반 판정의 고질병(죽었는데 실행 중으로
+# 남는 것)이 여기엔 없다. 대신 포그라운드로 띄운 서버도 같이 잡힌다.
+SRV_EMOJI='🌐'                  # 1행 배지 — 이 세션이 물고 있는 리스닝 포트 수
+SRVC=$'\e[38;5;79m'             # 서버 배지색 (청록 — shell 연녹/monitor 연청보라와 구분)
+DKR_EMOJI='🐳'                  # preview 전용 — compose 컨테이너
+DKRC=$'\e[38;5;67m'             # 컨테이너 색 (탁한 파랑 — 로컬 포트보다 한 단계 죽인다)
+SRV_BLK_MAX=8                   # preview servers 섹션에 나열할 최대 줄 수
+SRV_NAME_W=26                   # preview servers 섹션 이름 컬럼 폭
+SRV_ANCESTOR_MAX=12             # 리스닝 pid 에서 세션까지 거슬러 오를 최대 단계
+                                #   (zsh → npm → node 처럼 2~4 단계가 보통이고,
+                                #    순환이 생겨도 여기서 멈춘다)
+
+# compose 컨테이너 조회 캐시 — docker ps 는 0.4~1.0s 로 목록 폴링(2초)에 못 넣는다.
+# preview 에서만 부르되, ↑↓ 로 세션을 훑을 때 매번 1초를 물면 못 쓰므로 짧게 캐시한다.
+DKR_CACHE="${TMPDIR:-/tmp}/agentop-docker-$(id -u 2>/dev/null || echo 0)"
+DKR_TTL="${CC_TOP_DOCKER_TTL:-5}"   # 캐시 수명(초). 0 이면 compose 조회를 아예 끈다.
+
+# ---- 세션 보드 (hooks/board-*.sh 가 쌓는 편집 기록) ----
+# 같은 저장소의 세션들이 어떤 파일을 만졌는지 남기는 보드. 1행에는 '다른 세션과
+# 겹치는 파일 수' 만 배지로 얹고(⚠N), 무엇이 겹치는지는 preview 섹션에서 푼다.
+BOARD_EMOJI='⚠'                 # 1행 배지 — 겹치는 파일 수
+BOARDC=$'\e[38;5;173m'          # 보드 배지색 (주황 — 상태 빨강/노랑과 구분되는 톤)
+BOARD_BLK_MAX=6                 # preview 보드 섹션에 나열할 최대 파일 수
+BOARD_BLK_PATH_W=44             # preview 보드 섹션 경로 컬럼 폭

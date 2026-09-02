@@ -86,13 +86,14 @@ notify_hitl() {
 summary() {
   local lst="${CC_TOP_LST:-/dev/null}"
   [[ -s "$lst" ]] || { printf ''; return 0; }
-  awk -F'\037' -v B="$YELLOW" -v R="$RED" -v G="$GRAY" -v Z="$RESET" -v BL="$BLUE" '
+  awk -F'\037' -v B="$YELLOW" -v R="$RED" -v G="$GRAY" -v Z="$RESET" -v BL="$BLUE" -v S="$STOPC" '
     { n++; s=$7
       if ($4 ~ /^cursor:/)   cur++        # cursor 세션은 별도 표기 + 상태 집계에도 합산
       if ($4 ~ /^codex:/)    cdx++        # codex 세션도 동일 (오버레이 카운트)
       if      (s=="busy")    busy++
       else if (s=="waiting") wait++
       else if (s=="idle")    idle++
+      else if (s=="stopped") stop++       # 정지(SIGTSTP) 잔재 — 살아있는 셋과 따로 센다
       else if (s=="cursor")  { }          # 화면 못 읽어 상태 미상 — cur 에만 카운트
       else if (s=="codex")   { }          #   "          "        — cdx 에만 카운트
       else                   other++
@@ -102,6 +103,7 @@ summary() {
       wcol = (wait>0) ? R : G
       printf "%s%d sessions%s  %sbusy %d%s · %swait %d%s · %sidle %d%s",
         BL, n, Z, B, busy+0, Z, wcol, wait+0, Z, G, idle+0, Z
+      if (stop>0)  printf " · %sstop %d%s",   S, stop+0, Z
       if (cur>0)   printf " · %scursor %d%s", G, cur+0, Z
       if (cdx>0)   printf " · %scodex %d%s",  G, cdx+0, Z
       if (other>0) printf " · %s? %d%s",      G, other+0, Z
@@ -112,13 +114,13 @@ summary() {
 
 # ---------------------------------------------------------------------------
 # stats <avail> : 목록 바로 위에 얹는 전체 통계 한 줄.
-#   '지금 무슨 일이 벌어지고 있나' 를 맡는다 — 활동(🤖⚡🔭 합계) · 📁프로젝트 수 ·
+#   '지금 무슨 일이 벌어지고 있나' 를 맡는다 — 활동(🤖⚡🔭🌐 합계) · 📁프로젝트 수 ·
 #   🌿워크트리 비율 · 모델 분포. 세션 수와 cpu/mem 은 footer(summary) 몫이라 여기서
 #   빼서 위아래가 겹치지 않게 나눴다.
 #
 #   이모지는 ANSI 색을 안 먹으므로 숫자에만 색을 준다 (목록 배지와 같은 규칙).
 #
-#   원자료는 gen 이 실어 보낸 필드 15~18 이다 — 배지 개수와 모델은 col1 에 렌더만
+#   원자료는 gen 이 실어 보낸 필드 15~19 다 — 배지 개수와 모델은 col1 에 렌더만
 #   돼 있어 목록에서 다시 못 뽑는다.
 #
 #   폭이 모자라면 뒤 세그먼트부터 버린다 (활동 > 프로젝트 > 모델 순으로 지킨다).
@@ -129,8 +131,8 @@ stats() {
   local lst="${CC_TOP_LST:-/dev/null}" avail="${1:-80}"
   [[ -s "$lst" ]] || { printf ''; return 0; }
   awk -F'\037' -v AV="$avail" \
-      -v AGE="$AG_EMOJI" -v SHE="$SH_EMOJI" -v MONE="$MON_EMOJI" \
-      -v AGC="$YELLOW" -v SHCL="$SHC" -v MONCL="$MONC" \
+      -v AGE="$AG_EMOJI" -v SHE="$SH_EMOJI" -v MONE="$MON_EMOJI" -v SRVE="$SRV_EMOJI" \
+      -v AGC="$YELLOW" -v SHCL="$SHC" -v MONCL="$MONC" -v SRVCL="$SRVC" \
       -v G="$GRAY" -v Z="$RESET" -v BL="$BLUE" -v WTCL="$WTC" \
       -v PRE="$PROJ_EMOJI" -v WTE="$WT_EMOJI" \
       -v MO="$M_OPUS" -v MS="$M_SONNET" -v MH="$M_HAIKU" -v MF="$M_FABLE" '
@@ -148,7 +150,7 @@ stats() {
       out = out (out == "" ? "" : G "  │  " Z) seg
       used += sepw + w
     }
-    { ag += $15; sh += $16; mon += $17
+    { ag += $15; sh += $16; mon += $17; srv += $19
       if ($12 != "") proj[$12] = 1
       if ($13 != "") wt++
       if ($18 != "") mdl[$18]++ }
@@ -160,6 +162,7 @@ stats() {
       if (ag > 0)  { seg = seg (seg == "" ? "" : " ") AGE  AGC   ag  Z; w += (w ? 1 : 0) + 2 + length(ag)  }
       if (sh > 0)  { seg = seg (seg == "" ? "" : " ") SHE  SHCL  sh  Z; w += (w ? 1 : 0) + 2 + length(sh)  }
       if (mon > 0) { seg = seg (seg == "" ? "" : " ") MONE MONCL mon Z; w += (w ? 1 : 0) + 2 + length(mon) }
+      if (srv > 0) { seg = seg (seg == "" ? "" : " ") SRVE SRVCL srv Z; w += (w ? 1 : 0) + 2 + length(srv) }
       if (seg != "") add(seg, w)
       else           add(G "활동 없음" Z, 7)
 
@@ -242,16 +245,21 @@ act_width() {
 # ---------------------------------------------------------------------------
 # build_header <cols> : fzf 헤더 문자열 생성. 화면 폭에 맞춰 '명령 항목 경계'
 #   에서만 줄바꿈 → 항목 중간이 잘리지 않음. fzf 는 \n 포함 헤더를 멀티라인
-#   으로 렌더한다. 가용 폭은 메인 영역(main_width — 상세 패널이 있으면 전체의
-#   ~48%, 목록만 모드면 전체 폭). 'p' 항목은 현재 모드에서 누르면 되는 쪽을
-#   보여 준다 (패널 표시 중 → 'p 목록만', 목록만 모드 → 'p 상세').
+#   으로 렌더한다. 가용 폭은 메인 영역(main_width — 2단이면 전체의 ~48%, 목록만·
+#   활동 모드면 전체 폭). 'p' 항목은 현재 모드에서 누르면 가는 쪽을 보여 준다
+#   (2단 → 'p 목록만', 목록만 → 'p 활동', 활동 → 'p 상세').
 #   맨 윗줄은 전체 통계(stats), 마지막 2줄은 컬럼 이름 — 목록 바로 위에 붙도록
 #   --header-first 는 쓰지 않는다.
 # ---------------------------------------------------------------------------
 build_header() {
   local cols="${1:-80}"
+  # 'p' 항목은 지금 모드에서 누르면 가는 곳을 보여 준다 (2단→목록만→활동→2단).
   local pv_item
-  if preview_shown; then pv_item="p 목록만"; else pv_item="p 상세"; fi
+  case "$(preview_mode)" in
+    1) pv_item="p 목록만" ;;
+    0) pv_item="p 활동" ;;
+    *) pv_item="p 상세" ;;
+  esac
   local items=( "↑↓ 선택" "⏎ 탭 점프" "$pv_item" "k 강제종료" "r 새로고침" "q 종료" )
   local sep="   " sepw=3
   local avail=$(( $(main_width "$cols") - 2 ))

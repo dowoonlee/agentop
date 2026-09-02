@@ -126,7 +126,7 @@ gen_cursor() {
     fi
     col1="$col1$VT$(meta_line "$cwd")"   # cursor 는 모델/모드가 없어 브랜치만
     proj=$(git_root "$cwd"); proj="${proj:-$cwd}"
-    printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\0370\0370\0370\0370\037\n' \
+    printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\0370\0370\0370\0370\037\0370\037\n' \
       "$col1" "$pid" "$tty" "cursor:$pid" "$cwd" "${starteds[$i]}" "$status" "$waiting" "$dir" "${cpus[$i]}" "${rsss[$i]}" "$proj" "$(git_worktree "$cwd")"
   done
 }
@@ -211,7 +211,7 @@ gen_codex() {
     fi
     col1="$col1$VT$(meta_line "$cwd")"   # codex 도 모델/모드가 없어 브랜치만
     proj=$(git_root "$cwd"); proj="${proj:-$cwd}"
-    printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\0370\0370\0370\0370\037\n' \
+    printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\0370\0370\0370\0370\037\0370\037\n' \
       "$col1" "$pid" "$tty" "codex:$pid" "$cwd" "${starteds[$i]}" "$status" "$waiting" "$dir" "${cpus[$i]}" "${rsss[$i]}" "$proj" "$(git_worktree "$cwd")"
   done
 }

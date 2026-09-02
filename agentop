@@ -5,15 +5,18 @@
 #   ↑↓  세션 선택      ⏎  해당 iTerm 탭으로 포커스 점프
 #   k  선택 세션 강제종료 (SIGTERM → 잔존 시 SIGKILL, 확인 받음)
 #   r  즉시 새로고침   q / ESC  종료      (목록은 ~2초마다 자동 갱신)
-#   p  상세 패널 토글 — 기본 2단(좌 목록 / 우 상세) ⇄ 목록만 (전체 폭; dir·워크트리·
-#      브랜치가 잘리지 않고 전부 나오며 dir 컬럼은 가장 긴 이름에 맞춰 정렬)
+#   p  배치 순환 — 2단(좌 목록 / 우 상세) → 목록만(전체 폭; dir·워크트리·브랜치가
+#      잘리지 않고 전부 나오며 dir 컬럼은 가장 긴 이름에 맞춰 정렬) → 활동(아래쪽에
+#      선택 세션의 태스크·서버를 상한 없이 펴고 목록은 위에 그대로) → 다시 2단
 #
 # top 기능: 프로젝트(git 루트)별로 묶어 '── <프로젝트> ──' 구분선. 세션 1개당 2줄 —
 #   1행 상태/ctx 사용률/디렉터리(워크트리면 ⑂이름), 2행 ⎇브랜치 · 모델 · 권한모드.
 #   footer 에 세션 집계(cpu/mem 합), preview 에 cpu/mem + 브랜치/워크트리 + 모델 +
-#   ctx 사용률(90%+ 빨강) + 서브에이전트/백그라운드 태스크 목록. 활동 중인
-#   서브에이전트(🤖N) · 백그라운드 shell(⚡N) · Monitor(🔭N) 는 목록 1행 state 뒤
-#   'act' 슬롯에 배지로 붙는다 — 앞 컬럼이 고정폭이라 항상 같은 열에 선다.
+#   ctx 사용률(90%+ 빨강) + 서브에이전트/백그라운드 태스크/서버 목록. 활동 중인
+#   서브에이전트(🤖N) · 백그라운드 shell(⚡N) · Monitor(🔭N) · 로컬 서버(🌐N) 는
+#   목록 1행 state 뒤 'act' 슬롯에 배지로 붙는다 — 앞 컬럼이 고정폭이라 항상
+#   같은 열에 선다. 🌐 만 근거가 다르다 — transcript 가 아니라 실제 리스닝
+#   포트(lsof)를 보므로 포그라운드로 띄운 서버도 잡히고, 죽으면 바로 사라진다.
 #   waiting(HITL) 은 벨 + macOS 알림 (CC_TOP_NOTIFY=0 으로 끔).
 #
 # 데이터: `claude agents --json` + cursor-agent/codex CLI(iTerm2 화면 문구 매칭으로 HITL 감지)
@@ -40,7 +43,7 @@ unset _d
 #   각 파일 첫 줄에 역할이 적혀 있다.
 # ---------------------------------------------------------------------------
 LIB="${SELF%/*}/lib"
-for _m in const core tasks gen gen-agents preview ui actions; do
+for _m in const core board servers tasks gen gen-agents preview ui actions; do
   . "$LIB/$_m.sh" || { echo "agentop: lib/$_m.sh 를 읽을 수 없습니다" >&2; exit 1; }
 done
 unset _m
@@ -97,7 +100,7 @@ main() {
       --footer-border=line \
       --info=inline \
       --preview="$SELF --preview {2} {3} {4} {5} {6} {7} {8} {9}" \
-      --preview-window='right,52%,wrap,border-left' \
+      --preview-window="$PV_WIN_SPLIT" \
       --bind="up:up+$save" \
       --bind="down:down+$save" \
       --bind="page-up:page-up+$save" \
@@ -107,7 +110,7 @@ main() {
       --bind="start:transform-footer($SELF --summary)+reload(cat \"$lst\" | $TO0)" \
       --bind="load:transform-footer($SELF --summary)+transform-header($SELF --header \$FZF_COLUMNS)+reload($SELF --poll | $TO0)" \
       --bind="result:transform($SELF --posof)" \
-      --bind="p:toggle-preview+execute-silent($SELF --toggle-preview)+transform-header($SELF --header \$FZF_COLUMNS)+reload($SELF --gen | tee \"$lst\" | $TO0)" \
+      --bind="p:execute-silent($SELF --toggle-preview)+transform($SELF --pvaction)+transform-header($SELF --header \$FZF_COLUMNS)+reload($SELF --gen | tee \"$lst\" | $TO0)" \
       --bind="r:reload($SELF --gen | tee \"$lst\" | $TO0)" \
       --bind="k:execute($SELF --kill {2} {5} {9})+reload($SELF --gen | tee \"$lst\" | $TO0)" \
       --bind="enter:execute-silent($SELF --jump {3})" \
@@ -124,7 +127,8 @@ case "${1:-}" in
   --classify-codex) codex_classify ;;  #   "          "     codex 판정 (디버깅/테스트용)
   --kill)    shift; kill_session "$@" ;;
   --header)  build_header "${2:-80}" ;;   # resize / p 토글 시 transform-header 가 호출
-  --toggle-preview) toggle_preview ;;      # p 토글 — 패널 표시 상태 파일 뒤집기
+  --toggle-preview) toggle_preview ;;      # p — 배치 상태 파일 돌리기 (2단→목록만→활동)
+  --pvaction) pvaction ;;                  # p — 바뀐 상태에 맞는 fzf 창 액션 (transform 이 실행)
   --posof)   posof ;;
   --poll)    poll ;;
   --summary) summary ;;
