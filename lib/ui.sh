@@ -115,7 +115,7 @@ summary() {
 # ---------------------------------------------------------------------------
 # stats <avail> : 목록 바로 위에 얹는 전체 통계 한 줄.
 #   '지금 무슨 일이 벌어지고 있나' 를 맡는다 — 활동(🤖⚡🔭🌐🐳 합계, 🐳 는 주인
-#   없는 스택을 +N 으로 덧붙임) · 📁프로젝트 수 ·
+#   없는 스택을 색만 바꿔 이어 붙임) · 📁프로젝트 수 ·
 #   🌿워크트리 비율 · 모델 분포. 세션 수와 cpu/mem 은 footer(summary) 몫이라 여기서
 #   빼서 위아래가 겹치지 않게 나눴다.
 #
@@ -204,13 +204,14 @@ stats() {
       if (sh > 0)  { seg = seg (seg == "" ? "" : " ") SHE  SHCL  sh  Z; w += (w ? 1 : 0) + 2 + length(sh)  }
       if (mon > 0) { seg = seg (seg == "" ? "" : " ") MONE MONCL mon Z; w += (w ? 1 : 0) + 2 + length(mon) }
       if (srv > 0) { seg = seg (seg == "" ? "" : " ") SRVE SRVCL srv Z; w += (w ? 1 : 0) + 2 + length(srv) }
-      # 🐳 만 두 값을 한 배지에 담는다 — 귀속된 수, 그 뒤에 주인 없는 수를 다른 색
-      # (DKR_ORPHC)으로. 컨테이너색과 hue 가 반대라 붙여 써도 두 수가 갈린다.
-      # 귀속이 0 이면 숫자를 빼고 🐳+3 으로 — 0 을 찍으면 그게 총계로 읽힌다.
+      # 🐳 만 두 값을 한 배지에 담는다 — 귀속된 수에 이어 주인 없는 수를 다른 색
+      # (DKR_ORPHC)으로. 구분은 색이 전부다: 컨테이너색과 hue 가 반대라 🐳42 처럼
+      # 붙어도 두 수가 갈린다. 기호를 안 끼우는 대신, 귀속이 0 이면 앞 숫자를 빼서
+      # 🐳3(벽돌색) 한 덩어리로 낸다 — 0 을 찍으면 그게 총계로 읽힌다.
       if (dkr > 0 || orph > 0) {
         dv = (dkr > 0 ? dkr : "")
-        seg = seg (seg == "" ? "" : " ") DKRE DKRCL dv Z (orph > 0 ? ORPHCL "+" orph Z : "")
-        w += (w ? 1 : 0) + 2 + length(dv) + (orph > 0 ? 1 + length(orph) : 0)
+        seg = seg (seg == "" ? "" : " ") DKRE DKRCL dv Z (orph > 0 ? ORPHCL orph Z : "")
+        w += (w ? 1 : 0) + 2 + length(dv) + (orph > 0 ? length(orph) : 0)
       }
       if (seg != "") add(seg, w)
       else           add(G "활동 없음" Z, 7)
