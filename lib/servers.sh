@@ -223,30 +223,51 @@ dkr_warm() {
 #   구분자를 RS(0x1e)/US(0x1f) 로 둔다 — 경로에 들어갈 수 없는 바이트다.
 #   형식: <RS><디렉터리><US><실행 중 개수>  (항목이 이어서 붙는다)
 #
-#   세는 것은 running 뿐이다. 목록 배지는 '지금 떠 있는 것' 을 세는 자리라(🌐 도
-#   실제 리스닝 포트만 센다), 중지된 컨테이너는 preview 에서 '(중지 N)' 으로 푼다.
+#   값은 running 개수만 센다 — 목록 배지는 지금 떠 있는 것을 세는 자리다(🌐 도
+#   실제 리스닝 포트만 센다). 중지된 컨테이너는 preview 가 (중지 N) 으로 푼다.
+#
+#   다만 자리 자체는 running 이 하나도 없어도 맵에 넣는다(값 0). dkr_count 가
+#   위로 거슬러 올라가다 만나는 첫 자리에서 멈춰야 하는데, running 이 있는 자리만
+#   담으면 '스택이 전부 죽은 자리' 를 건너뛰고 상위 프로젝트 스택을 집어 온다 —
+#   그러면 목록은 🐳2 인데 상세는 그 죽은 자리를 펴서 중지만 보여 주는 모순이
+#   생긴다. 자리를 고르는 기준은 srv_docker 와 같아야 한다.
 # ---------------------------------------------------------------------------
 dkr_map() {
   [[ -f "$DKR_CACHE" ]] || return 0
   LC_ALL=C awk -F'\t' '
-    $1 != "" && $2 == "running" { n[$1]++ }
+    $1 != "" { n[$1] += ($2 == "running" ? 1 : 0) }
     END { for (d in n) printf "\036%s\037%s", d, n[d] }' "$DKR_CACHE" 2>/dev/null
   return 0
 }
 
 # ---------------------------------------------------------------------------
-# dkr_count <디렉터리> : 맵에서 그 자리의 실행 중 컨테이너 수. 없으면 0.
+# dkr_count <디렉터리> : 그 자리에서 도는 실행 중 컨테이너 수. 없으면 0.
 #   맵은 DKR_MAP 에 담겨 있다고 본다 (gen 이 루프 전에 한 번 채운다).
 #   프로세스를 띄우지 않는다 — 파라미터 확장만 쓴다.
+#
+#   정확히 그 경로만 보지 않고 위로 거슬러 올라가며 첫 compose 자리를 찾는다. 세션은
+#   프로젝트 안을 돌아다니는데(services/api 로 들어가거나, transcript 의 마지막
+#   cwd 가 node_modules 깊은 곳일 때도 있다) compose 파일은 대개 루트 한 곳에만
+#   있어서, 정확 일치로 두면 세션이 한 칸만 들어가도 배지가 떨어진다.
+#
+#   자리가 중첩되면(본체에도 compose 가 있고 워크트리에도 있으면) 가장 가까운
+#   조상 하나만 고른다 — 워크트리 세션은 워크트리 스택에만, 본체 세션은 본체
+#   스택에만 붙는다. 스택 하나가 두 세션 그룹에 겹쳐 세어지지 않는다.
 # ---------------------------------------------------------------------------
 dkr_count() {
-  local dir="${1:-}" rest n
+  local dir="${1:-}" p rest n
   [[ -n "$dir" && -n "${DKR_MAP:-}" ]] || { printf '0'; return 0; }
-  case "$DKR_MAP" in *$'\036'"$dir"$'\037'*) ;; *) printf '0'; return 0 ;; esac
-  rest="${DKR_MAP##*$'\036'"$dir"$'\037'}"
-  n="${rest%%$'\036'*}"
-  [[ "$n" =~ ^[0-9]+$ ]] || n=0
-  printf '%s' "$n"
+  p="$dir"
+  while [[ -n "$p" ]]; do
+    case "$DKR_MAP" in *$'\036'"$p"$'\037'*)
+      rest="${DKR_MAP##*$'\036'"$p"$'\037'}"
+      n="${rest%%$'\036'*}"
+      [[ "$n" =~ ^[0-9]+$ ]] && { printf '%s' "$n"; return 0; } ;;
+    esac
+    [[ "$p" == */* ]] || break        # 더 올라갈 곳이 없다 (상대경로의 마지막 조각)
+    p="${p%/*}"                       # '/a/b' → '/a' → '' (루트에서 끝난다)
+  done
+  printf '0'
 }
 
 # ---------------------------------------------------------------------------
@@ -255,7 +276,9 @@ dkr_count() {
 #
 #   귀속은 compose 가 컨테이너에 박아 두는 project.working_dir 라벨로 한다 —
 #   `docker compose -p c2p5317 …` 처럼 프로젝트 이름을 바꿔 띄워도 라벨은 compose
-#   파일이 있던 자리를 가리키므로, 세션의 실효 cwd 와 그대로 대응된다.
+#   파일이 있던 자리를 가리키므로, 세션의 실효 cwd 와 그대로 대응된다. 세션이 그
+#   아래 하위 디렉터리에 있어도 잡는다 (dkr_count 주석 참조 — 목록 배지와 같은
+#   규칙이라 여기 목록과 1행 숫자가 어긋나지 않는다).
 #
 #   docker ps 는 0.4~1.0s 라 목록 폴링(2초)에 못 넣는다. preview 에서만 부르되
 #   ↑↓ 로 훑을 때 매번 1초를 물면 못 쓰므로 짧게(DKR_TTL) 캐시한다. 캐시는 전체
@@ -273,22 +296,32 @@ srv_docker() {
   dkr_fresh || dkr_pull
   [[ -f "$DKR_CACHE" ]] || return 0
 
+  # 자리를 먼저 정하고(가장 가까운 조상) 그 자리 행만 편다. 한 번에 못 하는 건
+  # 조상 후보가 파일 뒤쪽에 나올 수 있어서다 — 줄을 담아 두고 END 에서 고른다.
   LC_ALL=C awk -F'\t' -v dir="$dir" '
-    $1 != dir { next }
-    {
-      # "0.0.0.0:19116->8000/tcp, [::]:19116->8000/tcp" → "19116→8000"
-      # IPv4/IPv6 이 같은 매핑을 두 번 실으므로 접는다. 공개 안 된 포트(8001/tcp)는 뺀다.
-      n = split($4, a, /, */); out = ""
-      for (i = 1; i <= n; i++) {
-        if (a[i] !~ /->/) continue
-        host = a[i]; sub(/->.*/, "", host); sub(/.*:/, "", host)
-        cont = a[i]; sub(/.*->/, "", cont); sub(/\/.*/, "", cont)
-        if (host == "" || (host SUBSEP cont) in seen) continue
-        seen[host, cont] = 1
-        out = out (out == "" ? "" : " ") host (host == cont ? "" : "\342\206\222" cont)
+    $1 != "" && ($1 == dir || index(dir, $1 "/") == 1) {
+      if (length($1) > length(best)) best = $1      # 가장 긴 = 가장 가까운 조상
+    }
+    { rows[NR] = $0 }
+    END {
+      if (best == "") exit
+      for (r = 1; r <= NR; r++) {
+        split(rows[r], f, "\t")
+        if (f[1] != best) continue
+        # "0.0.0.0:19116->8000/tcp, [::]:19116->8000/tcp" → "19116→8000"
+        # IPv4/IPv6 이 같은 매핑을 두 번 실으므로 접는다. 공개 안 된 포트(8001/tcp)는 뺀다.
+        n = split(f[4], a, /, */); out = ""
+        for (i = 1; i <= n; i++) {
+          if (a[i] !~ /->/) continue
+          host = a[i]; sub(/->.*/, "", host); sub(/.*:/, "", host)
+          cont = a[i]; sub(/.*->/, "", cont); sub(/\/.*/, "", cont)
+          if (host == "" || (host SUBSEP cont) in seen) continue
+          seen[host, cont] = 1
+          out = out (out == "" ? "" : " ") host (host == cont ? "" : "\342\206\222" cont)
+        }
+        delete seen
+        printf "%s\t%s\t%s\n", (f[2] == "running" ? "up" : "down"), f[3], out
       }
-      delete seen
-      printf "%s\t%s\t%s\n", ($2 == "running" ? "up" : "down"), $3, out
     }' "$DKR_CACHE"
   return 0
 }

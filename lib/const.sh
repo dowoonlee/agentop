@@ -146,6 +146,9 @@ SRV_EMOJI='🌐'                  # 1행 배지 — 이 세션이 물고 있는 
 SRVC=$'\e[38;5;79m'             # 서버 배지색 (청록 — shell 연녹/monitor 연청보라와 구분)
 DKR_EMOJI='🐳'                  # 1행 배지 + preview — 이 세션 자리에서 뜬 compose 컨테이너
 DKRC=$'\e[38;5;67m'             # 컨테이너 색 (탁한 파랑 — 로컬 포트보다 한 단계 죽인다)
+DKR_ORPHC=$'\e[38;5;131m'       # 주인 없는 스택 색 (탁한 벽돌 — 컨테이너색과 hue 가 반대라
+                                #   '🐳4+2' 처럼 붙여 써도 두 수가 갈린다. RED(167) 보다
+                                #   어둡고 탁한 톤 — 경고는 아니고 '정리해도 될 잔재' 다)
 SRV_BLK_MAX=8                   # preview servers 섹션에 나열할 최대 줄 수
 SRV_NAME_W=26                   # preview servers 섹션 이름 컬럼 폭
 SRV_ANCESTOR_MAX=12             # 리스닝 pid 에서 세션까지 거슬러 오를 최대 단계

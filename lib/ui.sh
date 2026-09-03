@@ -143,7 +143,7 @@ stats() {
   (( ${DKR_TTL:-5} > 0 )) && [[ -f "$DKR_CACHE" ]] && cache="$DKR_CACHE"
   awk -F'\037' -v AV="$avail" -v CACHE="$cache" \
       -v AGE="$AG_EMOJI" -v SHE="$SH_EMOJI" -v MONE="$MON_EMOJI" -v SRVE="$SRV_EMOJI" \
-      -v DKRE="$DKR_EMOJI" -v DKRCL="$DKRC" \
+      -v DKRE="$DKR_EMOJI" -v DKRCL="$DKRC" -v ORPHCL="$DKR_ORPHC" \
       -v AGC="$YELLOW" -v SHCL="$SHC" -v MONCL="$MONC" -v SRVCL="$SRVC" \
       -v G="$GRAY" -v Z="$RESET" -v BL="$BLUE" -v WTCL="$WTC" \
       -v PRE="$PROJ_EMOJI" -v WTE="$WT_EMOJI" \
@@ -167,7 +167,10 @@ stats() {
     # 세션과 무관한 시스템 전역 컨테이너가 다 들어와 숫자가 뜻을 잃는다.
     CACHE != "" && FILENAME == CACHE {
       n = split($0, c, "\t")
-      if (n >= 2 && c[1] != "" && c[2] == "running") dkrdir[c[1]]++
+      # 값은 running 수, 키는 자리 자체 — running 이 없는 자리도 키로 남긴다.
+      # 세션이 어느 자리에 붙는지 고를 때 dkr_map/srv_docker 와 같은 후보를 봐야
+      # 세 곳의 숫자가 어긋나지 않는다 (dkr_map 주석 참조).
+      if (n >= 2 && c[1] != "") dkrdir[c[1]] += (c[2] == "running" ? 1 : 0)
       next
     }
     # ns 는 세션 행 수 — NR 은 캐시 줄까지 세므로 못 쓴다.
@@ -182,7 +185,18 @@ stats() {
       # 없는 자리면 주인 없는 스택(orph). 세션이 끝났는데 compose down 을 안 한
       # 경우가 대부분이고, 귀속될 행이 없어 배지 어디에도 안 잡히므로 화면에서
       # 통째로 사라진다. 둘을 더하면 compose 로 뜬 실행 중 컨테이너 전부가 된다.
-      for (d in dkrdir) { if (d in sess) dkr += dkrdir[d]; else orph += dkrdir[d] }
+      #
+      # 자리를 고르는 규칙은 dkr_count(목록 배지)·srv_docker(상세)와 같아야 한다 —
+      # 세션의 실효 cwd 에서 위로 거슬러 올라가 만나는 첫 자리 하나. 세 곳이
+      # 어긋나면 행에는 붙어 있는데 통계에선 주인 없다는 모순이 화면에 뜬다.
+      # (이 awk 도 bash 작은따옴표 안이라 주석에 작은따옴표를 쓰면 거기서 끊긴다.)
+      for (sd in sess) {
+        bst = ""
+        for (cd in dkrdir)
+          if ((sd == cd || index(sd, cd "/") == 1) && length(cd) > length(bst)) bst = cd
+        if (bst != "") own[bst] = 1
+      }
+      for (cd in dkrdir) { if (cd in own) dkr += dkrdir[cd]; else orph += dkrdir[cd] }
 
       # 활동 — 돌고 있는 종류만. 이모지는 ANSI 를 안 먹어 숫자에만 색을 준다(배지와 동일).
       seg = ""; w = 0
@@ -190,12 +204,13 @@ stats() {
       if (sh > 0)  { seg = seg (seg == "" ? "" : " ") SHE  SHCL  sh  Z; w += (w ? 1 : 0) + 2 + length(sh)  }
       if (mon > 0) { seg = seg (seg == "" ? "" : " ") MONE MONCL mon Z; w += (w ? 1 : 0) + 2 + length(mon) }
       if (srv > 0) { seg = seg (seg == "" ? "" : " ") SRVE SRVCL srv Z; w += (w ? 1 : 0) + 2 + length(srv) }
-      # 🐳 만 두 값을 한 배지에 담는다 — 귀속된 수, 그 뒤에 주인 없는 수를 흐리게.
-      # 귀속이 0 이면 숫자를 빼고 '🐳+3' 으로 — '0' 을 찍으면 그게 총계로 읽힌다.
+      # 🐳 만 두 값을 한 배지에 담는다 — 귀속된 수, 그 뒤에 주인 없는 수를 다른 색
+      # (DKR_ORPHC)으로. 컨테이너색과 hue 가 반대라 붙여 써도 두 수가 갈린다.
+      # 귀속이 0 이면 숫자를 빼고 🐳+3 으로 — 0 을 찍으면 그게 총계로 읽힌다.
       if (dkr > 0 || orph > 0) {
-        d = (dkr > 0 ? dkr : "")
-        seg = seg (seg == "" ? "" : " ") DKRE DKRCL d Z (orph > 0 ? G "+" orph Z : "")
-        w += (w ? 1 : 0) + 2 + length(d) + (orph > 0 ? 1 + length(orph) : 0)
+        dv = (dkr > 0 ? dkr : "")
+        seg = seg (seg == "" ? "" : " ") DKRE DKRCL dv Z (orph > 0 ? ORPHCL "+" orph Z : "")
+        w += (w ? 1 : 0) + 2 + length(dv) + (orph > 0 ? 1 + length(orph) : 0)
       }
       if (seg != "") add(seg, w)
       else           add(G "활동 없음" Z, 7)
