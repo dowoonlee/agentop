@@ -21,11 +21,13 @@ wt_badge() {
 dir_cell() { printf '\036%s\035' "${1:-}"; }
 
 # ---------------------------------------------------------------------------
-# act_cell [서브에이전트수] [shell수] [monitor수] [서버수] : 1행 활동 배지 슬롯.
-#   🤖서브에이전트 · ⚡백그라운드 shell · 🔭Monitor · 🌐서버 를 state 와 ctx 사이에 모은다.
-#   🌐 를 맨 뒤에 둔 이유 — 앞의 셋은 '언젠가 끝나는 일' 이라 개수가 오르내리지만
-#   서버는 띄워 두면 계속 있다. 변동이 적은 것을 끝에 두면 앞자리가 흔들려도
-#   눈이 따라가는 자리가 덜 움직인다.
+# act_cell [서브에이전트수] [shell수] [monitor수] [서버수] [컨테이너수] : 1행 활동 배지 슬롯.
+#   🤖서브에이전트 · ⚡백그라운드 shell · 🔭Monitor · 🌐서버 · 🐳컨테이너 를 state 와
+#   ctx 사이에 모은다.
+#   🌐🐳 를 뒤에 둔 이유 — 앞의 셋은 '언젠가 끝나는 일' 이라 개수가 오르내리지만
+#   서버·컨테이너는 띄워 두면 계속 있다. 변동이 적은 것을 끝에 두면 앞자리가
+#   흔들려도 눈이 따라가는 자리가 덜 움직인다. 그중에서도 🐳 가 맨 끝인 건 스택을
+#   한 번 올리면 세션이 끝날 때까지 그대로인 쪽이라서다.
 #   앞의 icon(1)·state(5) 가 고정폭이라 슬롯 시작점이 항상 같은 자리 — 목록을
 #   세로로 훑으면 '지금 뭔가 돌고 있는 세션' 만 한 열에서 바로 잡힌다.
 #   (dir 뒤에 두던 시절엔 앞의 워크트리 배지가 행마다 길이가 달라 x 좌표가
@@ -40,14 +42,16 @@ dir_cell() { printf '\036%s\035' "${1:-}"; }
 #   숫자에만 색을 주는 건 이모지가 ANSI 를 안 먹기 때문 (const.sh 참조).
 # ---------------------------------------------------------------------------
 act_cell() {
-  local nag="${1:-}" nsh="${2:-0}" nmon="${3:-0}" nsrv="${4:-0}" s="" w=0
+  local nag="${1:-}" nsh="${2:-0}" nmon="${3:-0}" nsrv="${4:-0}" ndkr="${5:-0}" s="" w=0
   [[ "$nsh"  =~ ^[0-9]+$ ]] || nsh=0
   [[ "$nmon" =~ ^[0-9]+$ ]] || nmon=0
   [[ "$nsrv" =~ ^[0-9]+$ ]] || nsrv=0
+  [[ "$ndkr" =~ ^[0-9]+$ ]] || ndkr=0
   [[ -n "$nag" ]] && { s+="${AG_EMOJI}${YELLOW}${nag}${RESET}";  w=$(( w + 2 + ${#nag} )); }
   (( nsh  > 0 )) && { s+="${SH_EMOJI}${SHC}${nsh}${RESET}";      w=$(( w + 2 + ${#nsh} )); }
   (( nmon > 0 )) && { s+="${MON_EMOJI}${MONC}${nmon}${RESET}";   w=$(( w + 2 + ${#nmon} )); }
   (( nsrv > 0 )) && { s+="${SRV_EMOJI}${SRVC}${nsrv}${RESET}";   w=$(( w + 2 + ${#nsrv} )); }
+  (( ndkr > 0 )) && { s+="${DKR_EMOJI}${DKRC}${ndkr}${RESET}";   w=$(( w + 2 + ${#ndkr} )); }
   printf '%s%s%s\037%s' "$ACT_L" "$s" "$ACT_R" "$w"
 }
 
@@ -124,6 +128,7 @@ tx_scan() {
 # --gen : interactive 세션 1개당 레코드 1줄 (화면에는 VT 로 나뉜 2줄로 렌더)
 #   필드(\037 구분): 1 표시(col1) 2 pid 3 tty 4 sessionId 5 cwd 6 startedAt
 #                    7 status 8 waitingFor 9 name 10 cpu% 11 rssMB 12 project 13 worktree
+#                    14 활동슬롯폭 15~19·21~22 헤더 통계 원자료 20 포트목록(preview 용)
 #   12 project 는 목록 그룹핑 키 — git 저장소면 루트(워크트리는 본 저장소), 아니면 cwd.
 #   13 worktree 는 행 중복 판정용 — 실효 cwd 가 링크된 워크트리면 그 이름, 아니면 빈 값.
 # ---------------------------------------------------------------------------
@@ -133,6 +138,11 @@ gen() {
   local BOARD_MAP; BOARD_MAP=$(board_map)
   # 로컬 서버 — 리스닝 포트 맵도 같은 이유로 루프 전 1회 (lsof+ps 각 1번, ~0.15초).
   local SRV_MAP; SRV_MAP=$(srv_map)
+  # compose 컨테이너 — 여기서는 캐시만 읽는다. docker ps 는 데몬 상태에 따라 몇
+  # 초까지 늘어져 2초 폴링을 통째로 미룰 수 있어, 갱신은 백그라운드로만 건다
+  # (dkr_warm). 그래서 이번 목록에 반영되는 건 직전에 받아 둔 한 벌이다.
+  dkr_warm
+  local DKR_MAP; DKR_MAP=$(dkr_map)
   # 필드 구분자는 US(0x1f). 탭은 bash read 에서 빈 필드가 병합되어 못 씀.
   claude agents --json 2>/dev/null | jq -r '
     [ .[] | select(.kind=="interactive") ]
@@ -198,13 +208,17 @@ gen() {
         wtb=$(wt_badge "$ecwd")
         # 활동 배지(🤖⚡🔭)는 state 뒤 고정 슬롯으로 — act_cell 주석 참조.
         # dir 뒤에 남는 건 워크트리 배지 → 상태 사유 순.
-        local nag nsh nmon nsrv actc actw tail1 bbadge; nag=$(sub_live "$tx")
+        local nag nsh nmon nsrv ndkr actc actw tail1 bbadge; nag=$(sub_live "$tx")
         IFS=$'\037' read -r nsh nmon < <(tasks_live "$tx" "$(epoch_iso "$started")")
         # 서버 수는 transcript 가 아니라 포트 맵에서 온다 — 이 세션 pid 를 조상으로
         # 두고 리스닝 중인 프로세스의 개수다 (servers.sh 주석 참조).
         local sports; sports=$(srv_ports "$pid")
         nsrv=$(srv_count "$sports")
-        IFS=$'\037' read -r actc actw < <(act_cell "$nag" "$nsh" "$nmon" "$nsrv")
+        # 컨테이너 수는 귀속 근거가 또 다르다 — 데몬이 물고 있어 프로세스 조상으로는
+        # 못 잡으므로, compose 가 박아 둔 working_dir 라벨이 이 세션의 실효 cwd 와
+        # 같은 것을 센다. preview 의 🐳 목록과 같은 기준이라 숫자가 어긋나지 않는다.
+        ndkr=$(dkr_count "$ecwd")
+        IFS=$'\037' read -r actc actw < <(act_cell "$nag" "$nsh" "$nmon" "$nsrv" "$ndkr")
         # 보드 배지(⚠N)는 워크트리 배지 뒤 — '어디서 일하는지' 다음에 '누구와
         # 겹치는지' 가 오는 순서다. 겹침이 없으면 빈 값이라 자리를 안 차지한다.
         bbadge=$(board_badge "$sid")
@@ -230,9 +244,14 @@ gen() {
         # 있어 다시 못 뽑으므로 여기서 같이 실어 보낸다. 렌더에는 안 쓴다.
         # 20(포트 목록)은 preview 몫이다 — 별개 프로세스라 SRV_MAP 을 못 물려받는데,
         # 여기서 실어 보내면 패널을 그릴 때마다 lsof+ps 를 다시 도는 0.15초가 빠진다.
-        printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n' \
+        # 21(컨테이너 수)은 다시 헤더 통계용 — 20 뒤에 붙인 건 그 자리 번호를
+        # 건드리면 srv_snap_ports 가 엉뚱한 필드를 읽기 때문이다.
+        # 22(실효 cwd)도 헤더 통계용이다 — stats 가 '어느 자리에 세션이 있나' 를
+        # 알아야 그 자리에 없는 컨테이너(주인 없는 스택)를 셀 수 있다. 5(시작 cwd)
+        # 로는 안 된다: 배지가 실효 cwd 로 귀속을 판정하므로 기준이 어긋난다.
+        printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n' \
           "$col1" "$pid" "$tty" "$sid" "$cwd" "$started" "$status" "$waiting" "$name" "$cpu" "$rssmb" "$proj" "$wt" "$actw" \
-          "${nag:-0}" "${nsh:-0}" "${nmon:-0}" "$pretty" "${nsrv:-0}" "${sports:-}"
+          "${nag:-0}" "${nsh:-0}" "${nmon:-0}" "$pretty" "${nsrv:-0}" "${sports:-}" "${ndkr:-0}" "${ecwd:-}"
      done
 }
 

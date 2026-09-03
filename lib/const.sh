@@ -144,7 +144,7 @@ PV_WIN_ACT='down,72%,wrap,border-top'
 # 남는 것)이 여기엔 없다. 대신 포그라운드로 띄운 서버도 같이 잡힌다.
 SRV_EMOJI='🌐'                  # 1행 배지 — 이 세션이 물고 있는 리스닝 포트 수
 SRVC=$'\e[38;5;79m'             # 서버 배지색 (청록 — shell 연녹/monitor 연청보라와 구분)
-DKR_EMOJI='🐳'                  # preview 전용 — compose 컨테이너
+DKR_EMOJI='🐳'                  # 1행 배지 + preview — 이 세션 자리에서 뜬 compose 컨테이너
 DKRC=$'\e[38;5;67m'             # 컨테이너 색 (탁한 파랑 — 로컬 포트보다 한 단계 죽인다)
 SRV_BLK_MAX=8                   # preview servers 섹션에 나열할 최대 줄 수
 SRV_NAME_W=26                   # preview servers 섹션 이름 컬럼 폭
@@ -152,9 +152,14 @@ SRV_ANCESTOR_MAX=12             # 리스닝 pid 에서 세션까지 거슬러 �
                                 #   (zsh → npm → node 처럼 2~4 단계가 보통이고,
                                 #    순환이 생겨도 여기서 멈춘다)
 
-# compose 컨테이너 조회 캐시 — docker ps 는 0.4~1.0s 로 목록 폴링(2초)에 못 넣는다.
-# preview 에서만 부르되, ↑↓ 로 세션을 훑을 때 매번 1초를 물면 못 쓰므로 짧게 캐시한다.
+# compose 컨테이너 조회 캐시 — docker ps 는 0.1~1.0s 로 폭이 넓고, 데몬이 안 떠
+# 있으면 몇 초를 끈다. 목록 폴링(2초)도 preview 도 그 시간을 그대로 물 수 없으므로
+# 조회 결과를 짧게 캐시한다. 목록은 캐시만 읽고 갱신은 백그라운드로 돌린다
+# (dkr_warm) — 배지가 최대 DKR_TTL 초 늦게 붙는 대신 폴링이 절대 안 밀린다.
+# 컨테이너는 dev 서버처럼 오래 떠 있는 것이라 그 정도 지연은 읽는 데 지장이 없다.
 DKR_CACHE="${TMPDIR:-/tmp}/agentop-docker-$(id -u 2>/dev/null || echo 0)"
+DKR_LOCK="$DKR_CACHE.lock"          # 갱신 중복 방지 (mkdir 원자성). 아래 초 넘게 묵으면 치운다.
+DKR_LOCK_STALE=60                   # 갱신 프로세스가 죽어 남은 락으로 보는 기준(초)
 DKR_TTL="${CC_TOP_DOCKER_TTL:-5}"   # 캐시 수명(초). 0 이면 compose 조회를 아예 끈다.
 
 # ---- 세션 보드 (hooks/board-*.sh 가 쌓는 편집 기록) ----

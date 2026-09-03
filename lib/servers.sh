@@ -18,8 +18,9 @@
 #   못 잡는다. 조상 추적은 무엇을 어떻게 띄웠든 결과(열린 포트)만 본다.
 #
 #   Docker 컨테이너는 여기서 안 잡힌다 — 컨테이너 포트는 Docker 데몬이 물고
-#   있어 세션의 자손이 아니다. compose 스택은 preview 에서만 따로 조회한다
-#   (srv_docker 주석 참조).
+#   있어 세션의 자손이 아니다. compose 스택은 근거도 조회 방법도 달라서 아래
+#   dkr_* 계열이 따로 맡는다 (라벨 귀속 + docker ps 캐시). 목록 배지도 🌐 과
+#   합치지 않고 🐳 로 따로 세운다 — 자세한 이유는 srv_block 주석 참조.
 #
 # agentop 이 source 하는 모듈이다 (단독 실행 아님). 상수·헬퍼는 agentop 프로세스
 # 하나 안에서 공유되므로, 여기 정의는 다른 모듈에서 그대로 보인다.
@@ -160,6 +161,95 @@ srv_name() {
 }
 
 # ---------------------------------------------------------------------------
+# compose 컨테이너 캐시 — docker ps 한 벌을 파일에 받아 두고 목록·preview 가
+#   같이 읽는다. 조회를 부르는 자리가 둘이라(2초 폴링 + 패널 갱신) 각자 부르면
+#   docker 데몬을 초당 몇 번씩 두드리게 된다.
+#
+#   dkr_fresh : 캐시가 TTL 안인가 (파일 mtime 만 본다 — 프로세스를 안 띄운다)
+#   dkr_pull  : 동기 갱신. 락(mkdir)으로 중복 실행을 막는다 — 2초 폴링이 도는
+#               동안 갱신이 아직 안 끝났으면 그 사이클은 그냥 건너뛴다.
+#   dkr_warm  : 목록용. 낡았으면 백그라운드로 갱신만 걸고 즉시 돌아온다.
+#
+#   캐시가 없는 첫 사이클엔 배지가 안 붙고 다음 폴링(2초 뒤)에 붙는다. 컨테이너를
+#   '지금 막' 띄운 순간을 다투는 값이 아니라 그 편이 폴링을 미루는 것보다 낫다.
+# ---------------------------------------------------------------------------
+dkr_fresh() {
+  local mt now
+  (( ${DKR_TTL:-5} > 0 )) || return 1
+  mt=$(stat -f '%m' "$DKR_CACHE" 2>/dev/null)
+  [[ "$mt" =~ ^[0-9]+$ ]] || return 1
+  now=$(date +%s)
+  (( now - mt <= DKR_TTL ))
+}
+
+dkr_pull() {
+  local now mt
+  (( ${DKR_TTL:-5} > 0 )) || return 1
+  command -v docker >/dev/null 2>&1 || return 1
+  if ! mkdir "$DKR_LOCK" 2>/dev/null; then
+    # 락이 잡혀 있다 — 보통은 다른 프로세스가 지금 긁는 중이라 그냥 넘긴다.
+    # 다만 docker 가 매달려 갱신 프로세스가 죽어 버린 경우엔 락이 영영 남아
+    # 캐시가 다시는 안 갱신되므로, 오래 묵은 락은 치우고 다음 호출에 맡긴다.
+    now=$(date +%s); mt=$(stat -f '%m' "$DKR_LOCK" 2>/dev/null)
+    [[ "$mt" =~ ^[0-9]+$ ]] && (( now - mt > DKR_LOCK_STALE )) && rmdir "$DKR_LOCK" 2>/dev/null
+    return 1
+  fi
+  # 데몬이 안 떠 있으면 docker ps 가 몇 초를 끌 수 있다 — 빈 캐시라도 남겨 두면
+  # TTL 동안은 다시 안 부른다 (그만큼 멈추는 것을 막는다).
+  docker ps -a --no-trunc \
+    --format '{{.Label "com.docker.compose.project.working_dir"}}\t{{.State}}\t{{.Names}}\t{{.Ports}}' \
+    > "$DKR_CACHE.$$" 2>/dev/null
+  mv -f "$DKR_CACHE.$$" "$DKR_CACHE" 2>/dev/null || rm -f "$DKR_CACHE.$$" 2>/dev/null
+  rmdir "$DKR_LOCK" 2>/dev/null
+  return 0
+}
+
+dkr_warm() {
+  (( ${DKR_TTL:-5} > 0 )) || return 0
+  command -v docker >/dev/null 2>&1 || return 0
+  dkr_fresh && return 0
+  # 부모(gen)가 끝나도 갱신은 남아 캐시를 채우고 죽는다. 출력은 전부 버린다 —
+  # gen 의 stdout 은 목록 레코드 전용이라 한 글자라도 새면 행이 깨진다.
+  ( dkr_pull >/dev/null 2>&1 & ) >/dev/null 2>&1
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# dkr_map : 캐시를 한 번 훑어 만든 '작업 디렉터리별 실행 중 컨테이너 수' 맵.
+#   srv_map·board_map 과 같은 방침 — gen 의 세션 루프가 프로세스를 더 띄우지 않고
+#   파라미터 확장만으로 조회하도록 문자열 하나로 낸다.
+#
+#   다만 키가 경로다. srv_map 의 ' <pid>:<값> ' 형식은 공백이 든 경로에서 깨지므로
+#   구분자를 RS(0x1e)/US(0x1f) 로 둔다 — 경로에 들어갈 수 없는 바이트다.
+#   형식: <RS><디렉터리><US><실행 중 개수>  (항목이 이어서 붙는다)
+#
+#   세는 것은 running 뿐이다. 목록 배지는 '지금 떠 있는 것' 을 세는 자리라(🌐 도
+#   실제 리스닝 포트만 센다), 중지된 컨테이너는 preview 에서 '(중지 N)' 으로 푼다.
+# ---------------------------------------------------------------------------
+dkr_map() {
+  [[ -f "$DKR_CACHE" ]] || return 0
+  LC_ALL=C awk -F'\t' '
+    $1 != "" && $2 == "running" { n[$1]++ }
+    END { for (d in n) printf "\036%s\037%s", d, n[d] }' "$DKR_CACHE" 2>/dev/null
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# dkr_count <디렉터리> : 맵에서 그 자리의 실행 중 컨테이너 수. 없으면 0.
+#   맵은 DKR_MAP 에 담겨 있다고 본다 (gen 이 루프 전에 한 번 채운다).
+#   프로세스를 띄우지 않는다 — 파라미터 확장만 쓴다.
+# ---------------------------------------------------------------------------
+dkr_count() {
+  local dir="${1:-}" rest n
+  [[ -n "$dir" && -n "${DKR_MAP:-}" ]] || { printf '0'; return 0; }
+  case "$DKR_MAP" in *$'\036'"$dir"$'\037'*) ;; *) printf '0'; return 0 ;; esac
+  rest="${DKR_MAP##*$'\036'"$dir"$'\037'}"
+  n="${rest%%$'\036'*}"
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  printf '%s' "$n"
+}
+
+# ---------------------------------------------------------------------------
 # srv_docker <디렉터리> : 그 디렉터리에서 띄운 compose 컨테이너.
 #   출력: <상태:up|down> \t <이름> \t <포트매핑>
 #
@@ -175,21 +265,12 @@ srv_name() {
 #   대신 띄운' 상황이 실제로 흔하고, 그때 죽은 쪽이 안 보이면 이유를 못 찾는다.
 # ---------------------------------------------------------------------------
 srv_docker() {
-  local dir="${1:-}" now mt
+  local dir="${1:-}"
   [[ -n "$dir" ]] || return 0
-  (( ${DKR_TTL:-5} > 0 )) || return 0
-  command -v docker >/dev/null 2>&1 || return 0
-
-  now=$(date +%s)
-  mt=$(stat -f '%m' "$DKR_CACHE" 2>/dev/null)
-  if [[ ! "$mt" =~ ^[0-9]+$ ]] || (( now - mt > DKR_TTL )); then
-    # 데몬이 안 떠 있으면 docker ps 가 몇 초를 끌 수 있다 — 빈 캐시를 남겨 두면
-    # TTL 동안은 다시 안 부른다 (preview 가 그만큼 멈추는 것을 막는다).
-    docker ps -a --no-trunc \
-      --format '{{.Label "com.docker.compose.project.working_dir"}}\t{{.State}}\t{{.Names}}\t{{.Ports}}' \
-      > "$DKR_CACHE.$$" 2>/dev/null
-    mv -f "$DKR_CACHE.$$" "$DKR_CACHE" 2>/dev/null || rm -f "$DKR_CACHE.$$" 2>/dev/null
-  fi
+  # preview 는 목록과 달리 '지금 이 세션 하나' 를 그리는 자리라, 캐시가 낡았으면
+  # 여기서 기다려서라도 채운다 (dkr_pull 은 동기다). 목록 쪽은 절대 안 기다린다
+  # — dkr_warm 이 백그라운드로만 갱신한다.
+  dkr_fresh || dkr_pull
   [[ -f "$DKR_CACHE" ]] || return 0
 
   LC_ALL=C awk -F'\t' -v dir="$dir" '
@@ -217,9 +298,10 @@ srv_docker() {
 #   로컬 리스닝 포트(🌐)를 먼저, 그 세션의 compose 컨테이너(🐳)를 뒤에 붙인다.
 #   둘 다 없으면 아무것도 그리지 않는다 (조용한 기본값 — board_block 과 같다).
 #
-#   목록 1행 배지는 로컬 포트만 센다. 컨테이너는 여기서만 보여 준다 — 조회가
-#   비싸서 폴링에 못 넣기도 하고, '내가 띄운 프로세스' 와 '데몬이 들고 있는
-#   컨테이너' 는 죽일 때의 손버릇도 달라서 같은 숫자로 합치면 오해를 부른다.
+#   목록 1행에도 둘 다 나가지만 배지는 끝까지 나눠 둔다(🌐N 🐳N). '내가 띄운
+#   프로세스' 와 '데몬이 들고 있는 컨테이너' 는 죽이는 손버릇도(k 로 세션을
+#   접으면 앞의 것만 같이 죽는다) 살아 있는 근거도 달라서, 같은 숫자로 합치면
+#   그 차이가 지워진다. 여기 상세는 그 위에 이름·포트 매핑과 중지된 것까지 편다.
 # ---------------------------------------------------------------------------
 srv_block() {
   local pid="${1:-}" cwd="${2:-}" ports dk rows=0 nloc=0 nup=0 ndown=0

@@ -114,14 +114,16 @@ summary() {
 
 # ---------------------------------------------------------------------------
 # stats <avail> : 목록 바로 위에 얹는 전체 통계 한 줄.
-#   '지금 무슨 일이 벌어지고 있나' 를 맡는다 — 활동(🤖⚡🔭🌐 합계) · 📁프로젝트 수 ·
+#   '지금 무슨 일이 벌어지고 있나' 를 맡는다 — 활동(🤖⚡🔭🌐🐳 합계, 🐳 는 주인
+#   없는 스택을 +N 으로 덧붙임) · 📁프로젝트 수 ·
 #   🌿워크트리 비율 · 모델 분포. 세션 수와 cpu/mem 은 footer(summary) 몫이라 여기서
 #   빼서 위아래가 겹치지 않게 나눴다.
 #
 #   이모지는 ANSI 색을 안 먹으므로 숫자에만 색을 준다 (목록 배지와 같은 규칙).
 #
-#   원자료는 gen 이 실어 보낸 필드 15~19 다 — 배지 개수와 모델은 col1 에 렌더만
-#   돼 있어 목록에서 다시 못 뽑는다.
+#   원자료는 gen 이 실어 보낸 필드 15~19·21 이다 — 배지 개수와 모델은 col1 에
+#   렌더만 돼 있어 목록에서 다시 못 뽑는다. (cursor/codex 행은 뒤쪽 필드가 아예
+#   없는데, awk 에서 빈 필드는 0 으로 더해지므로 따로 막지 않는다.)
 #
 #   폭이 모자라면 뒤 세그먼트부터 버린다 (활동 > 프로젝트 > 모델 순으로 지킨다).
 #   줄바꿈은 하지 않는다 — 헤더가 한 줄 늘 때마다 목록이 그만큼 줄고, 세션 1개가
@@ -130,8 +132,13 @@ summary() {
 stats() {
   local lst="${CC_TOP_LST:-/dev/null}" avail="${1:-80}"
   [[ -s "$lst" ]] || { printf ''; return 0; }
-  awk -F'\037' -v AV="$avail" \
+  # 주인 없는 스택(+N)을 세려면 컨테이너 캐시를 같이 넘겨야 한다. 조회를 껐거나
+  # 아직 한 벌도 못 받았으면 스냅샷만 넘긴다 — awk 쪽은 캐시가 없어도 그대로 돈다.
+  local cache=""
+  (( ${DKR_TTL:-5} > 0 )) && [[ -f "$DKR_CACHE" ]] && cache="$DKR_CACHE"
+  awk -F'\037' -v AV="$avail" -v CACHE="$cache" \
       -v AGE="$AG_EMOJI" -v SHE="$SH_EMOJI" -v MONE="$MON_EMOJI" -v SRVE="$SRV_EMOJI" \
+      -v DKRE="$DKR_EMOJI" -v DKRCL="$DKRC" \
       -v AGC="$YELLOW" -v SHCL="$SHC" -v MONCL="$MONC" -v SRVCL="$SRVC" \
       -v G="$GRAY" -v Z="$RESET" -v BL="$BLUE" -v WTCL="$WTC" \
       -v PRE="$PROJ_EMOJI" -v WTE="$WT_EMOJI" \
@@ -150,12 +157,26 @@ stats() {
       out = out (out == "" ? "" : G "  │  " Z) seg
       used += sepw + w
     }
-    { ag += $15; sh += $16; mon += $17; srv += $19
+    # 컨테이너 캐시가 먼저 온다 — 여기서 모으는 건 compose 로 뜬(working_dir 라벨이
+    # 있는) 실행 중 컨테이너뿐이다. 라벨이 없는 것(손으로 docker run 한 것)까지 세면
+    # 세션과 무관한 시스템 전역 컨테이너가 다 들어와 숫자가 뜻을 잃는다.
+    CACHE != "" && FILENAME == CACHE {
+      n = split($0, c, "\t")
+      if (n >= 2 && c[1] != "" && c[2] == "running") dkrdir[c[1]]++
+      next
+    }
+    # ns 는 세션 행 수 — NR 은 캐시 줄까지 세므로 못 쓴다.
+    { ns++; ag += $15; sh += $16; mon += $17; srv += $19; dkr += $21
+      if ($22 != "") sess[$22] = 1       # 세션이 실제로 앉아 있는 자리 (배지의 귀속 기준)
       if ($12 != "") proj[$12] = 1
       if ($13 != "") wt++
       if ($18 != "") mdl[$18]++ }
     END {
-      if (NR == 0) { printf ""; exit }
+      if (ns == 0) { printf ""; exit }
+      # 주인 없는 스택 — 세션이 하나도 없는 자리에서 도는 컨테이너다. 세션이 끝났는데
+      # 스택만 남은 경우가 대부분이라, 배지 어디에도 안 잡혀 화면에서 통째로 사라진다.
+      # 귀속된 수(배지 합계)와 이 수를 더하면 compose 로 뜬 실행 중 컨테이너 전부다.
+      for (d in dkrdir) if (!(d in sess)) orph += dkrdir[d]
 
       # 활동 — 돌고 있는 종류만. 이모지는 ANSI 를 안 먹어 숫자에만 색을 준다(배지와 동일).
       seg = ""; w = 0
@@ -163,6 +184,13 @@ stats() {
       if (sh > 0)  { seg = seg (seg == "" ? "" : " ") SHE  SHCL  sh  Z; w += (w ? 1 : 0) + 2 + length(sh)  }
       if (mon > 0) { seg = seg (seg == "" ? "" : " ") MONE MONCL mon Z; w += (w ? 1 : 0) + 2 + length(mon) }
       if (srv > 0) { seg = seg (seg == "" ? "" : " ") SRVE SRVCL srv Z; w += (w ? 1 : 0) + 2 + length(srv) }
+      # 🐳 만 두 값을 한 배지에 담는다 — 귀속된 수, 그 뒤에 주인 없는 수를 흐리게.
+      # 귀속이 0 이면 숫자를 빼고 '🐳+3' 으로 — '0' 을 찍으면 그게 총계로 읽힌다.
+      if (dkr > 0 || orph > 0) {
+        d = (dkr > 0 ? dkr : "")
+        seg = seg (seg == "" ? "" : " ") DKRE DKRCL d Z (orph > 0 ? G "+" orph Z : "")
+        w += (w ? 1 : 0) + 2 + length(d) + (orph > 0 ? 1 + length(orph) : 0)
+      }
       if (seg != "") add(seg, w)
       else           add(G "활동 없음" Z, 7)
 
@@ -171,7 +199,7 @@ stats() {
       # (이 awk 도 bash 작은따옴표 안이라 주석에 작은따옴표를 쓰면 거기서 끊긴다.)
       np = length(proj)
       seg = PRE BL np Z; w = 2 + length(np)
-      if (wt > 0) { seg = seg " " WTE WTCL wt Z G "/" NR Z; w += 1 + 2 + length(wt) + 1 + length(NR) }
+      if (wt > 0) { seg = seg " " WTE WTCL wt Z G "/" ns Z; w += 1 + 2 + length(wt) + 1 + length(ns) }
       add(seg, w)
 
       # 모델 분포 — 많은 순 3종까지, 나머지는 +N 으로 접는다.
@@ -192,7 +220,7 @@ stats() {
 
       printf "%s", out
     }
-  ' "$lst"
+  ' ${cache:+"$cache"} "$lst"
 }
 
 # ---------------------------------------------------------------------------
