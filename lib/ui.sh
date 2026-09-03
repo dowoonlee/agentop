@@ -37,9 +37,18 @@ poll() {
   # 남의 작업 디렉터리를 더럽히지 않도록 $TMPDIR 로 보낸다.
   local base="${CC_TOP_LST:-${TMPDIR:-/tmp}/agentop-lst}"
   local lst="$base" sigf="$base.sig" waitf="$base.wait"
-  local out sig
+  local out sig timer
   while :; do
-    sleep 2
+    # 주기 타이머를 먼저 띄우고 gen 을 그 옆에서 돌린다. sleep 을 gen 앞에 두면
+    # 한 바퀴가 'POLL_INT + gen' 이 되어 실제 갱신 간격이 두 배 가까이 벌어진다
+    # (실측: 세션 5개에서 gen 1.7초 → 사이클 3.7초). 겹쳐 두면 gen 이 주기 안에
+    # 들어가는 한 간격이 POLL_INT 로 고정되고, 넘겨도 초과분만 밀린다.
+    #
+    # stdout 을 끊어 두는 게 중요하다 — 이 함수의 출력은 fzf reload 파이프로
+    # 가는데, 백그라운드 sleep 이 그 fd 를 물고 있으면 poll 이 끝나도 파이프의
+    # 쓰기 끝이 안 닫혀 fzf 가 타이머가 만료될 때까지 목록을 못 받는다.
+    sleep "$POLL_INT" >/dev/null 2>&1 &
+    timer=$!
     out=$("$SELF" --gen)
     sig=$(printf '%s' "$out" | cut -d$'\037' -f1-5,7-9)
     if [[ "$sig" != "$(cat "$sigf" 2>/dev/null)" ]]; then
@@ -54,7 +63,15 @@ poll() {
       printf '%s' "$sig" > "$sigf"
       printf '%s\n' "$out" > "$lst"   # posof 용 스냅샷
       printf '%s\n' "$out"            # fzf 목록 교체
+      # 남은 타이머를 거둔다 — 안 거두면 고아 sleep 이 최대 POLL_INT 초 남는다.
+      kill "$timer" 2>/dev/null; wait "$timer" 2>/dev/null
       return 0
+    fi
+    # 바뀐 게 없으면 남은 주기만 쉰다. gen 이 주기를 넘겨 타이머가 이미 끝났으면
+    # wait 가 즉시 돌아오는데, 그대로 다음 바퀴로 가면 gen 이 쉬지 않고 이어 붙어
+    # CPU 를 계속 문다 — 그때는 최소한의 숨(POLL_FLOOR)을 돌린다.
+    if kill -0 "$timer" 2>/dev/null; then wait "$timer" 2>/dev/null
+    else                                  sleep "$POLL_FLOOR"
     fi
   done
 }
@@ -200,18 +217,18 @@ stats() {
 
       # 활동 — 돌고 있는 종류만. 이모지는 ANSI 를 안 먹어 숫자에만 색을 준다(배지와 동일).
       seg = ""; w = 0
-      if (ag > 0)  { seg = seg (seg == "" ? "" : " ") AGE  AGC   ag  Z; w += (w ? 1 : 0) + 2 + length(ag)  }
-      if (sh > 0)  { seg = seg (seg == "" ? "" : " ") SHE  SHCL  sh  Z; w += (w ? 1 : 0) + 2 + length(sh)  }
-      if (mon > 0) { seg = seg (seg == "" ? "" : " ") MONE MONCL mon Z; w += (w ? 1 : 0) + 2 + length(mon) }
-      if (srv > 0) { seg = seg (seg == "" ? "" : " ") SRVE SRVCL srv Z; w += (w ? 1 : 0) + 2 + length(srv) }
+      if (ag > 0)  { seg = seg (seg == "" ? "" : " ") AGE  " " AGC   ag  Z; w += (w ? 1 : 0) + 3 + length(ag)  }
+      if (sh > 0)  { seg = seg (seg == "" ? "" : " ") SHE  " " SHCL  sh  Z; w += (w ? 1 : 0) + 3 + length(sh)  }
+      if (mon > 0) { seg = seg (seg == "" ? "" : " ") MONE " " MONCL mon Z; w += (w ? 1 : 0) + 3 + length(mon) }
+      if (srv > 0) { seg = seg (seg == "" ? "" : " ") SRVE " " SRVCL srv Z; w += (w ? 1 : 0) + 3 + length(srv) }
       # 🐳 만 두 값을 한 배지에 담는다 — 귀속된 수에 이어 주인 없는 수를 다른 색
-      # (DKR_ORPHC)으로. 구분은 색이 전부다: 컨테이너색과 hue 가 반대라 🐳42 처럼
+      # (DKR_ORPHC)으로. 구분은 색이 전부다: 컨테이너색과 hue 가 반대라 🐳 42 처럼
       # 붙어도 두 수가 갈린다. 기호를 안 끼우는 대신, 귀속이 0 이면 앞 숫자를 빼서
-      # 🐳3(벽돌색) 한 덩어리로 낸다 — 0 을 찍으면 그게 총계로 읽힌다.
+      # 🐳 3(벽돌색) 한 덩어리로 낸다 — 0 을 찍으면 그게 총계로 읽힌다.
       if (dkr > 0 || orph > 0) {
         dv = (dkr > 0 ? dkr : "")
-        seg = seg (seg == "" ? "" : " ") DKRE DKRCL dv Z (orph > 0 ? ORPHCL orph Z : "")
-        w += (w ? 1 : 0) + 2 + length(dv) + (orph > 0 ? length(orph) : 0)
+        seg = seg (seg == "" ? "" : " ") DKRE " " DKRCL dv Z (orph > 0 ? ORPHCL orph Z : "")
+        w += (w ? 1 : 0) + 3 + length(dv) + (orph > 0 ? length(orph) : 0)
       }
       if (seg != "") add(seg, w)
       else           add(G "활동 없음" Z, 7)
@@ -220,8 +237,8 @@ stats() {
       # 비율이다 — 분모가 세션 수라 나머지(본체 체크아웃)가 몇 개인지 바로 읽힌다.
       # (이 awk 도 bash 작은따옴표 안이라 주석에 작은따옴표를 쓰면 거기서 끊긴다.)
       np = length(proj)
-      seg = PRE BL np Z; w = 2 + length(np)
-      if (wt > 0) { seg = seg " " WTE WTCL wt Z G "/" ns Z; w += 1 + 2 + length(wt) + 1 + length(ns) }
+      seg = PRE " " BL np Z; w = 3 + length(np)
+      if (wt > 0) { seg = seg " " WTE " " WTCL wt Z G "/" ns Z; w += 1 + 3 + length(wt) + 1 + length(ns) }
       add(seg, w)
 
       # 모델 분포 — 많은 순 3종까지, 나머지는 +N 으로 접는다.

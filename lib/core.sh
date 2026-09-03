@@ -6,6 +6,23 @@
 # 하나 안에서 공유되므로, 여기 정의는 다른 모듈에서 그대로 보인다.
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
+# _r 반환 규약
+#   2초 폴링 경로(gen)는 세션 하나를 그릴 때마다 이 헬퍼들을 열몇 번 부른다.
+#   `x=$(f ...)` 는 값 하나 받자고 서브셸을 띄운다. 서브셸 자체는 이 환경에서
+#   0.7ms 로 싸지만, 그 안에서 외부 명령을 부르면 단가가 6~7ms 로 뛰고(sed·
+#   basename·date·ps) jq 는 21ms 다. 세션 수만큼 곱해지는 자리라 값 하나 받자고
+#   프로세스를 띄우는 습관이 폴링 한 바퀴를 통째로 밀어낸다.
+#
+#   그래서 계산 본체는 결과를 전역 `_r` 에 담는 `*_r` 함수로 두고, 기존 이름은
+#   그것을 찍어 주는 한 줄 래퍼로 남긴다. 서브셸을 아끼는 것 자체보다, 이 형태여야
+#   함수 안에서 sed·basename 같은 것을 걷어낼 자리가 보인다는 쪽이 크다.
+#   preview 처럼 세션 하나만 그리는 자리는 가독성이 나은 기존 이름을 그대로 쓴다.
+#
+#   규약: `_r` 은 다음 `*_r` 호출이 덮어쓴다 — 부른 직후에 읽어 제 변수로 옮길 것.
+#   값을 둘 내는 함수만 `_r2` 를 함께 쓴다 (act_cell_r).
+_r=""; _r2=""
+
+# ---------------------------------------------------------------------------
 # mode_of <transcript.jsonl> : 세션의 현재 permission mode (shift+tab 토글).
 #   토글 시마다 transcript 에 permission-mode 레코드가 기록됨 → 마지막 값이 현재.
 # mode_badge <mode> : 목록 행용 색 배지. default 는 노이즈라 표시 안 함.
@@ -23,17 +40,18 @@ mode_of() {
   return 0
 }
 
-mode_badge() {
+mode_badge_r() {
   case "${1:-}" in
-    acceptEdits)       printf '%s⏵⏵accept%s' "$YELLOW" "$RESET" ;;
-    plan)              printf '%s⏸ plan%s'    "$BLUE"   "$RESET" ;;
-    bypassPermissions) printf '%s⏵⏵BYPASS%s' "$RED"    "$RESET" ;;
+    acceptEdits)       _r="${YELLOW}⏵⏵accept${RESET}" ;;
+    plan)              _r="${BLUE}⏸ plan${RESET}"     ;;
+    bypassPermissions) _r="${RED}⏵⏵BYPASS${RESET}"    ;;
     # default·auto 는 사실상 모든 세션에 붙어 노이즈라 목록에선 생략한다
     # (preview 의 mode 줄에는 원래 값이 그대로 나온다)
-    default|auto|'')   ;;
-    *)                 printf '%s%s%s'        "$GRAY" "$1" "$RESET" ;;
+    default|auto|'')   _r=""                          ;;
+    *)                 _r="${GRAY}${1}${RESET}"       ;;
   esac
 }
+mode_badge() { mode_badge_r "${1:-}"; printf '%s' "$_r"; }
 
 # ---------------------------------------------------------------------------
 # cwd_of <transcript.jsonl> : 세션의 '실효' 작업 디렉터리.
@@ -56,16 +74,20 @@ cwd_of() {
 #   달라지면(툴에서 cd 등) 해시가 빗나가므로, 그때만 프로젝트 폴더를 sessionId
 #   로 한 단계 glob 해서 찾는다 (디렉토리 수십 개 stat 이라 폴링에도 부담 없음).
 # ---------------------------------------------------------------------------
-tx_of() {
+tx_of_r() {
   local cwd="${1:-}" sid="${2:-}" p f
+  _r=""
   [[ -z "$sid" || "$sid" == cursor:* || "$sid" == codex:* ]] && return 0
-  p="$HOME/.claude/projects/$(printf '%s' "$cwd" | sed 's#[/.]#-#g')/$sid.jsonl"
-  [[ -f "$p" ]] && { printf '%s' "$p"; return 0; }
+  # 프로젝트 폴더명은 cwd 의 '/' 와 '.' 을 '-' 로 바꾼 것. sed 파이프를 쓰던
+  # 자리인데 세션마다 프로세스 둘이 떠서 파라미터 확장으로 옮겼다 (같은 결과).
+  p="$HOME/.claude/projects/${cwd//[\/.]/-}/$sid.jsonl"
+  [[ -f "$p" ]] && { _r="$p"; return 0; }
   for f in "$HOME"/.claude/projects/*/"$sid.jsonl"; do
-    [[ -f "$f" ]] && { printf '%s' "$f"; return 0; }
+    [[ -f "$f" ]] && { _r="$f"; return 0; }
   done
   return 0
 }
+tx_of() { tx_of_r "${1:-}" "${2:-}"; printf '%s' "$_r"; }
 
 # ---------------------------------------------------------------------------
 # model_of <transcript.jsonl> : 세션이 마지막으로 쓴 모델 id.
@@ -85,18 +107,23 @@ model_of() {
   printf '%s' "${m%\"}"
 }
 
-model_pretty() {
-  [[ -z "${1:-}" ]] && return 0
-  printf '%s' "$1" | sed -E '
-    s/^([a-z]+\.)?anthropic\.//
-    s/^claude-//
-    s/-v[0-9]+(:[0-9]+)?$//
-    s/-[0-9]{8}$//
-    s/^([a-z]+)-([0-9]+)-([0-9]+)$/\1\2.\3/
-    s/^([0-9]+)-([0-9]+)-([a-z]+)$/\3\1.\2/
-    s/^([a-z]+)-([0-9]+)$/\1\2/
-  '
+model_pretty_r() {
+  local m="${1:-}" re
+  _r=""
+  [[ -z "$m" ]] && return 0
+  # 아래는 sed -E 스크립트를 그대로 옮긴 것이다 — 순서가 뜻을 갖는다(앞 치환의
+  # 결과에 뒤 치환이 걸린다). sed 파이프는 세션마다 프로세스 둘을 띄우는데
+  # 모델 id 한 줄 다듬자고 낼 비용이 아니라 bash 정규식으로 내렸다.
+  re='^([a-z]+\.)?anthropic\.(.*)$'; [[ "$m" =~ $re ]] && m="${BASH_REMATCH[2]}"
+  m="${m#claude-}"
+  re='^(.*)-v[0-9]+(:[0-9]+)?$';       [[ "$m" =~ $re ]] && m="${BASH_REMATCH[1]}"
+  re='^(.*)-[0-9]{8}$';                [[ "$m" =~ $re ]] && m="${BASH_REMATCH[1]}"
+  re='^([a-z]+)-([0-9]+)-([0-9]+)$';   [[ "$m" =~ $re ]] && m="${BASH_REMATCH[1]}${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+  re='^([0-9]+)-([0-9]+)-([a-z]+)$';   [[ "$m" =~ $re ]] && m="${BASH_REMATCH[3]}${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+  re='^([a-z]+)-([0-9]+)$';            [[ "$m" =~ $re ]] && m="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+  _r="$m"
 }
+model_pretty() { model_pretty_r "${1:-}"; printf '%s' "$_r"; }
 
 # ---------------------------------------------------------------------------
 # ctx_of <transcript.jsonl> : 마지막 응답 시점의 컨텍스트 토큰 수. 없으면 빈 값.
@@ -129,36 +156,41 @@ ctx_of() {
   printf '%s' $(( it + cr + cc ))
 }
 
-ctx_pct_n() {   # <토큰 수> → 사용률 정수(%)
+ctx_pct_n_r() {   # <토큰 수> → 사용률 정수(%)
   local toks="${1:-}" cm p
+  _r=""
   [[ "$toks" =~ ^[0-9]+$ ]] && (( toks > 0 )) || return 0
   cm=$CTX_MAX; (( toks > cm )) && cm=1000000
   p=$(( toks * 100 / cm )); (( p > 100 )) && p=100
-  printf '%s' "$p"
+  _r="$p"
 }
+ctx_pct_n() { ctx_pct_n_r "${1:-}"; printf '%s' "$_r"; }
 
 ctx_pct() { ctx_pct_n "$(ctx_of "${1:-}")"; }
 
-ctx_cell_n() {  # <토큰 수> → 목록 1행의 4칸 셀
-  local p c; p=$(ctx_pct_n "${1:-}")
-  [[ -z "$p" ]] && { printf '%s   -%s' "$DIM" "$RESET"; return 0; }
+ctx_cell_n_r() {  # <토큰 수> → 목록 1행의 4칸 셀
+  local p c
+  ctx_pct_n_r "${1:-}"; p="$_r"
+  [[ -z "$p" ]] && { _r="${DIM}   -${RESET}"; return 0; }
   c="$GRAY"
   (( p >= 75 )) && c="$YELLOW"
   (( p >= 90 )) && c="$RED"
-  printf '%s%3d%%%s' "$c" "$p" "$RESET"
+  printf -v _r '%s%3d%%%s' "$c" "$p" "$RESET"
 }
+ctx_cell_n() { ctx_cell_n_r "${1:-}"; printf '%s' "$_r"; }
 
 ctx_cell() { ctx_cell_n "$(ctx_of "${1:-}")"; }
 
-model_color() {
+model_color_r() {
   case "${1:-}" in
-    opus*)   printf '%s' "$M_OPUS"   ;;
-    sonnet*) printf '%s' "$M_SONNET" ;;
-    haiku*)  printf '%s' "$M_HAIKU"  ;;
-    fable*)  printf '%s' "$M_FABLE"  ;;
-    *)       printf '%s' "$GRAY"     ;;
+    opus*)   _r="$M_OPUS"   ;;
+    sonnet*) _r="$M_SONNET" ;;
+    haiku*)  _r="$M_HAIKU"  ;;
+    fable*)  _r="$M_FABLE"  ;;
+    *)       _r="$GRAY"     ;;
   esac
 }
+model_color() { model_color_r "${1:-}"; printf '%s' "$_r"; }
 
 # ---------------------------------------------------------------------------
 # git_dir <cwd> : 상위로 올라가며 찾은 .git 디렉터리 경로. 저장소가 아니면 빈 값.
@@ -170,49 +202,68 @@ model_color() {
 # git_worktree <cwd> : 링크된 워크트리에서 작업 중이면 그 워크트리 이름, 본체
 #   체크아웃이면 빈 값. 같은 프로젝트 그룹 안에서 본체/워크트리를 구분하는 용도.
 # ---------------------------------------------------------------------------
-git_dir() {
-  local d="${1:-}" gd=""
+git_dir_r() {
+  local d="${1:-}" gd="" ln
+  _r=""
   [[ -z "$d" || "$d" == "?" ]] && return 0
   while [[ -n "$d" && "$d" != "/" ]]; do
     if [[ -d "$d/.git" ]]; then gd="$d/.git"; break; fi
     if [[ -f "$d/.git" ]]; then
-      gd=$(sed -n 's/^gitdir: *//p' "$d/.git" 2>/dev/null | head -1)
+      # 'gitdir: <경로>' 를 읽는다. sed|head 를 쓰던 자리인데 워크트리 세션마다
+      # 프로세스 둘이 떠서 셸 읽기로 옮겼다 — 규칙은 같다(첫 매칭 줄, 콜론 뒤
+      # 공백은 몇 개든 뗀다).
+      while IFS= read -r ln || [[ -n "$ln" ]]; do
+        case "$ln" in gitdir:*)
+          gd="${ln#gitdir:}"
+          while [[ "$gd" == " "* ]]; do gd="${gd# }"; done
+          break ;;
+        esac
+      done < "$d/.git"
       [[ -n "$gd" && "$gd" != /* ]] && gd="$d/$gd"
       break
     fi
     d="${d%/*}"
   done
-  printf '%s' "$gd"
+  _r="$gd"
 }
+git_dir() { git_dir_r "${1:-}"; printf '%s' "$_r"; }
 
-git_branch() {
-  local gd head
-  gd=$(git_dir "${1:-}")
+git_branch_r() {   # <cwd> [이미 구해 둔 git_dir — 있으면 그걸 쓴다]
+  local gd="${2:-}" head
+  _r=""
+  [[ -n "$gd" ]] || { git_dir_r "${1:-}"; gd="$_r"; _r=""; }
   [[ -n "$gd" && -f "$gd/HEAD" ]] || return 0
   head=$(< "$gd/HEAD")
   if [[ "$head" == ref:* ]]; then
     head="${head#ref: }"
-    printf '%s' "${head#refs/heads/}"
+    _r="${head#refs/heads/}"
   else
-    printf '%s' "${head:0:7}"        # detached HEAD
+    _r="${head:0:7}"                 # detached HEAD
   fi
 }
+git_branch() { git_branch_r "${1:-}" "${2:-}"; printf '%s' "$_r"; }
 
-git_root() {
-  local gd; gd=$(git_dir "${1:-}")
+git_root_r() {   # <cwd> [이미 구해 둔 git_dir]
+  local gd="${2:-}"
+  [[ -n "$gd" ]] || { git_dir_r "${1:-}"; gd="$_r"; }
   case "$gd" in
-    */.git/worktrees/*) printf '%s' "${gd%/.git/worktrees/*}" ;;  # 워크트리 → 본 저장소
-    */.git/modules/*)   printf '%s' "${gd%/.git/modules/*}"   ;;  # 서브모듈 → 상위 저장소
-    */.git)             printf '%s' "${gd%/.git}"             ;;
+    */.git/worktrees/*) _r="${gd%/.git/worktrees/*}" ;;  # 워크트리 → 본 저장소
+    */.git/modules/*)   _r="${gd%/.git/modules/*}"   ;;  # 서브모듈 → 상위 저장소
+    */.git)             _r="${gd%/.git}"             ;;
+    *)                  _r=""                        ;;
   esac
 }
+git_root() { git_root_r "${1:-}" "${2:-}"; printf '%s' "$_r"; }
 
-git_worktree() {
-  local gd; gd=$(git_dir "${1:-}")
+git_worktree_r() {   # <cwd> [이미 구해 둔 git_dir]
+  local gd="${2:-}"
+  [[ -n "$gd" ]] || { git_dir_r "${1:-}"; gd="$_r"; }
   case "$gd" in
-    */.git/worktrees/*) printf '%s' "${gd##*/}" ;;
+    */.git/worktrees/*) _r="${gd##*/}" ;;
+    *)                  _r=""          ;;
   esac
 }
+git_worktree() { git_worktree_r "${1:-}" "${2:-}"; printf '%s' "$_r"; }
 
 # ---------------------------------------------------------------------------
 # preview_mode : 화면 배치 상태. 'p' 가 $lst.pv 를 돌리고 여기서 읽는다.

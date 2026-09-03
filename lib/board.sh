@@ -1,5 +1,5 @@
 # board.sh — 세션 보드 조회 — hooks/board-*.sh 가 쌓아 둔 편집 기록을 읽어
-#   목록 1행 배지(⚠N)와 preview 상세 섹션으로 만든다.
+#   목록 1행 배지(⚠ N)와 preview 상세 섹션으로 만든다.
 #
 #   보드에 쓰는 쪽은 훅(hooks/board-record.sh), 여기는 읽기만 한다. 저장 규칙·
 #   경로 판정은 hooks/board-lib.sh 를 그대로 쓴다 — 같은 규칙을 두 곳에 적으면
@@ -45,18 +45,20 @@ board_map() {
 }
 
 # ---------------------------------------------------------------------------
-# board_badge <sid> : 1행 배지 '⚠N'. 겹침이 없으면 빈 값.
+# board_badge <sid> : 1행 배지 '⚠ N'. 겹침이 없으면 빈 값.
 #   맵은 BOARD_MAP 에 담겨 있다고 본다 (gen 이 루프 전에 한 번 채운다).
 #   프로세스를 띄우지 않는다 — 파라미터 확장만 쓴다.
 # ---------------------------------------------------------------------------
-board_badge() {
+board_badge_r() {
   local sid="${1:-}" rest cnt
+  _r=""
   [[ -n "$sid" && -n "${BOARD_MAP:-}" ]] || return 0
   case "$BOARD_MAP" in *" $sid:"*) ;; *) return 0 ;; esac
   rest="${BOARD_MAP##* "$sid":}"; cnt="${rest%% *}"
   [[ "$cnt" =~ ^[0-9]+$ ]] && (( cnt > 0 )) || return 0
-  printf '%s%s%s%s' "$BOARDC" "$BOARD_EMOJI" "$cnt" "$RESET"
+  _r="${BOARDC}${BOARD_EMOJI} ${cnt}${RESET}"
 }
+board_badge() { board_badge_r "${1:-}"; printf '%s' "$_r"; }
 
 # ---------------------------------------------------------------------------
 # board_block <sid> <cwd> : preview 하단 '이 세션이 만진 파일' 섹션.

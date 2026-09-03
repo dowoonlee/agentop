@@ -7,12 +7,15 @@
 # wt_badge <cwd> : 1행 워크트리 배지 '⑂ <이름>'. 본체 체크아웃이면 빈 값.
 #   같은 프로젝트 그룹 안에 워크트리가 여럿일 수 있으므로 이름까지 찍는다
 #   (dir 컬럼은 17자로 잘려 서로 구분이 안 되는 경우가 있음).
-wt_badge() {
-  local w; w=$(git_worktree "${1:-}")
+wt_badge_r() {   # <cwd> [이미 구해 둔 git_dir]
+  local w
+  git_worktree_r "${1:-}" "${2:-}"; w="$_r"
+  _r=""
   [[ -z "$w" ]] && return 0
   if (( ! WIDE )) && (( ${#w} > WT_MAX )); then w="${w:0:$((WT_MAX-1))}…"; fi
-  printf '%s⑂ %s%s' "$WTC" "$w" "$RESET"
+  _r="${WTC}⑂ ${w}${RESET}"
 }
+wt_badge() { wt_badge_r "${1:-}" "${2:-}"; printf '%s' "$_r"; }
 
 # dir_cell <dir> : 1행 dir 컬럼 셀 — 원문을 RS(0x1e)…GS(0x1d) 마커로 감싸 두기만
 #   한다. 실제 폭(2단=DIR_W 고정 / 목록만=가장 긴 dir)은 행 전체를 봐야 정해지므로
@@ -38,22 +41,23 @@ dir_cell() { printf '\036%s\035' "${1:-}"; }
 #   빈 셀(폭 0) — cursor/codex 행이 열만 맞출 때 쓴다.
 #
 #   폭은 셀과 함께 US 로 붙여 내보낸다. 셀에 ANSI 가 섞여 있어 표시폭을 나중에
-#   다시 세기 번거롭고(이모지 2칸 + 색코드 0칸), 헤더도 같은 값이 필요하다.
+#   다시 세기 번거롭고(이모지 2칸 + 공백 1칸 + 색코드 0칸), 헤더도 같은 값이 필요하다.
 #   숫자에만 색을 주는 건 이모지가 ANSI 를 안 먹기 때문 (const.sh 참조).
 # ---------------------------------------------------------------------------
-act_cell() {
+act_cell_r() {   # 셀은 _r, 표시폭은 _r2 로 낸다 (값이 둘인 유일한 헬퍼)
   local nag="${1:-}" nsh="${2:-0}" nmon="${3:-0}" nsrv="${4:-0}" ndkr="${5:-0}" s="" w=0
   [[ "$nsh"  =~ ^[0-9]+$ ]] || nsh=0
   [[ "$nmon" =~ ^[0-9]+$ ]] || nmon=0
   [[ "$nsrv" =~ ^[0-9]+$ ]] || nsrv=0
   [[ "$ndkr" =~ ^[0-9]+$ ]] || ndkr=0
-  [[ -n "$nag" ]] && { s+="${AG_EMOJI}${YELLOW}${nag}${RESET}";  w=$(( w + 2 + ${#nag} )); }
-  (( nsh  > 0 )) && { s+="${SH_EMOJI}${SHC}${nsh}${RESET}";      w=$(( w + 2 + ${#nsh} )); }
-  (( nmon > 0 )) && { s+="${MON_EMOJI}${MONC}${nmon}${RESET}";   w=$(( w + 2 + ${#nmon} )); }
-  (( nsrv > 0 )) && { s+="${SRV_EMOJI}${SRVC}${nsrv}${RESET}";   w=$(( w + 2 + ${#nsrv} )); }
-  (( ndkr > 0 )) && { s+="${DKR_EMOJI}${DKRC}${ndkr}${RESET}";   w=$(( w + 2 + ${#ndkr} )); }
-  printf '%s%s%s\037%s' "$ACT_L" "$s" "$ACT_R" "$w"
+  [[ -n "$nag" ]] && { s+="${AG_EMOJI} ${YELLOW}${nag}${RESET}";  w=$(( w + 3 + ${#nag} )); }
+  (( nsh  > 0 )) && { s+="${SH_EMOJI} ${SHC}${nsh}${RESET}";      w=$(( w + 3 + ${#nsh} )); }
+  (( nmon > 0 )) && { s+="${MON_EMOJI} ${MONC}${nmon}${RESET}";   w=$(( w + 3 + ${#nmon} )); }
+  (( nsrv > 0 )) && { s+="${SRV_EMOJI} ${SRVC}${nsrv}${RESET}";   w=$(( w + 3 + ${#nsrv} )); }
+  (( ndkr > 0 )) && { s+="${DKR_EMOJI} ${DKRC}${ndkr}${RESET}";   w=$(( w + 3 + ${#ndkr} )); }
+  _r="${ACT_L}${s}${ACT_R}"; _r2="$w"
 }
+act_cell() { act_cell_r "${1:-}" "${2:-0}" "${3:-0}" "${4:-0}" "${5:-0}"; printf '%s\037%s' "$_r" "$_r2"; }
 
 # ---------------------------------------------------------------------------
 # meta_line <cwd> [model_pretty] [mode_badge] : 행의 2번째 줄.
@@ -63,10 +67,10 @@ act_cell() {
 #   세그먼트를 빼지 않고 'no-git' 을 흐리게 박는다 — 자리가 비면 '브랜치를 못
 #   읽은 건지 저장소가 아닌 건지' 헷갈리므로 항상 명시한다.
 # ---------------------------------------------------------------------------
-meta_line() {
-  local cwd="${1:-}" pretty="${2:-}" badge="${3:-}" br out="" sep
+meta_line_r() {   # <cwd> [모델] [모드배지] [이미 구해 둔 git_dir]
+  local cwd="${1:-}" pretty="${2:-}" badge="${3:-}" gd="${4:-}" br out="" sep mc
   sep="${DIM} · ${RESET}"
-  br=$(git_branch "$cwd")
+  git_branch_r "$cwd" "$gd"; br="$_r"
   if [[ -n "$br" ]]; then
     # 긴 브랜치명이 뒤의 모델/모드를 밀어내지 않게 잘라 표시 (전체 값은 preview 에).
     # 목록만(wide) 모드는 자리가 넉넉하므로 원문 그대로.
@@ -75,10 +79,14 @@ meta_line() {
   else
     out="${DIM}⎇ no-git${RESET}"
   fi
-  [[ -n "$pretty" ]] && out+="${out:+$sep}$(model_color "$pretty")${pretty}${RESET}"
+  if [[ -n "$pretty" ]]; then
+    model_color_r "$pretty"; mc="$_r"
+    out+="${out:+$sep}${mc}${pretty}${RESET}"
+  fi
   [[ -n "$badge" ]] && out+="${out:+$sep}${badge}"
-  printf '%s%s└%s %s' "$META_IND" "$DIM" "$RESET" "$out"
+  _r="${META_IND}${DIM}└${RESET} ${out}"
 }
+meta_line() { meta_line_r "${1:-}" "${2:-}" "${3:-}" "${4:-}"; printf '%s' "$_r"; }
 
 # ---------------------------------------------------------------------------
 # sub_live <transcript> : 최근 SUB_LIVE 초 안에 쓰기가 있었던 서브에이전트 수.
@@ -86,16 +94,20 @@ meta_line() {
 #   판정 근거는 preview 와 동일(jsonl mtime = 마지막 활동). subagents 디렉터리가
 #   없는 세션은 stat 도 안 돌아서 폴링 부담이 사실상 없다.
 # ---------------------------------------------------------------------------
-sub_live() {
-  local tx="${1:-}" sub n
+sub_live_r() {   # <transcript> [지금 epoch — 루프에서 한 번만 구해 넘긴다]
+  local tx="${1:-}" now="${2:-}" sub n
+  _r=""
   [[ -n "$tx" ]] || return 0
   sub="${tx%.jsonl}/subagents"
   [[ -d "$sub" ]] || return 0
+  [[ -n "$now" ]] || now=$(date +%s)
+  # awk 가 직접 세게 해 wc|tr 두 프로세스를 뺐다 (같은 값).
   n=$(stat -f '%m' "$sub"/agent-*.jsonl 2>/dev/null \
-      | awk -v n="$(date +%s)" -v w="$SUB_LIVE" '$1 > n-w' | wc -l | tr -d ' ')
-  (( ${n:-0} > 0 )) && printf '%s' "$n"
+      | LC_ALL=C awk -v n="$now" -v w="$SUB_LIVE" '$1 > n-w { c++ } END { print c+0 }')
+  (( ${n:-0} > 0 )) && _r="$n"
   return 0
 }
+sub_live() { sub_live_r "${1:-}" "${2:-}"; printf '%s' "$_r"; }
 
 # ---------------------------------------------------------------------------
 # tx_scan <transcript.jsonl> : model \037 permissionMode \037 cwd \037 ctx토큰.
@@ -144,16 +156,48 @@ gen() {
   dkr_warm
   local DKR_MAP; DKR_MAP=$(dkr_map)
   # 필드 구분자는 US(0x1f). 탭은 bash read 에서 빈 필드가 병합되어 못 씀.
-  claude agents --json 2>/dev/null | jq -r '
+  # 세션 목록을 파이프로 바로 while 에 물리지 않고 한 번 받아 둔다 — 파이프로
+  # 흘리면 pid 를 미리 모을 수 없어 ps 를 세션마다 따로 불러야 한다(아래 PS_MAP).
+  local rows
+  rows=$(claude agents --json 2>/dev/null | jq -r '
     [ .[] | select(.kind=="interactive") ]
     | sort_by(.pid) | .[] |
     [ (.pid|tostring), (.status // "?"), (.waitingFor // ""), .cwd,
       (.name // ""), (.sessionId // "-"), ((.startedAt // 0)|tostring) ] | join("")
-  ' | while IFS=$'\037' read -r pid status waiting cwd name sid started; do
-        # tty + cpu + rss + stat 을 한 번의 ps 호출로. cpu 는 정수%(리스트 표시·서명용),
-        # rss 는 MB(요약/preview 용). cpu 정수화로 idle(0%) 은 서명 안정 → 깜빡임 없음.
+  ')
+  [[ -n "$rows" ]] || return 0
+
+  # ps 는 한 번만 부른다. 세션마다 부르면 폴링 한 바퀴에 ps 가 세션 수만큼 뜨는데,
+  # 이 환경에서 ps 한 번이 ~7ms 라 그것만으로 세션 5개에 35ms 다. pid 를 콤마로
+  # 이어 한 번에 묻고, 각 행은 아래에서 파라미터 확장으로 제 줄만 집어 간다.
+  # awk 로 필드를 다시 짜는 건 ps -o pid= 가 폭에 맞춰 앞을 공백으로 채우기
+  # 때문 — 그대로 두면 pid 앞 공백 수가 자릿수마다 달라 매칭이 어긋난다.
+  local plist="" PS_MAP="" NOW p
+  while IFS=$'\037' read -r p _; do
+    [[ -n "$p" ]] && plist="${plist:+$plist,}$p"
+  done <<< "$rows"
+  [[ -n "$plist" ]] && PS_MAP=$'\n'$(ps -o pid=,tty=,%cpu=,rss=,stat= -p "$plist" 2>/dev/null \
+    | LC_ALL=C awk '{ print $1" "$2" "$3" "$4" "$5 }')$'\n'
+  # sub_live 가 세션마다 date 를 부르지 않도록 지금 시각도 한 번만 구한다.
+  NOW=$(date +%s)
+
+  # 루프 안에서만 쓰는 값들 — 예전엔 파이프 서브셸이 감싸 줘서 함수 밖으로 안
+  # 샜는데, 이제 서브셸이 없으므로 여기서 명시적으로 함수 스코프에 가둔다.
+  local tty dir icon st lab col1 psline
+  while IFS=$'\037' read -r pid status waiting cwd name sid started; do
+        [[ -n "$pid" ]] || continue
+        # tty + cpu + rss + stat 은 위에서 받아 둔 ps 한 벌에서 제 줄만 집어 온다.
+        # cpu 는 정수%(리스트 표시·서명용), rss 는 MB(요약/preview 용).
+        # cpu 정수화로 idle(0%) 은 서명 안정 → 깜빡임 없음.
         local ptty pcpu prss pstat
-        read -r ptty pcpu prss pstat < <(ps -o tty=,%cpu=,rss=,stat= -p "$pid" 2>/dev/null)
+        ptty=""; pcpu=""; prss=""; pstat=""
+        case "$PS_MAP" in *$'\n'"$pid "*)
+          psline="${PS_MAP#*$'\n'"$pid" }"; psline="${psline%%$'\n'*}"
+          ptty="${psline%% *}";  psline="${psline#* }"
+          pcpu="${psline%% *}";  psline="${psline#* }"
+          prss="${psline%% *}";  psline="${psline#* }"
+          pstat="${psline%% *}" ;;
+        esac
         tty="${ptty:-}"
         [[ -z "$tty" || "$tty" == "??" ]] && tty="-"
         local cpu="${pcpu%%.*}"; [[ "$cpu" =~ ^[0-9]+$ ]] || cpu=0
@@ -165,10 +209,20 @@ gen() {
         # waitingFor 도 함께 지운다: 멈춘 세션의 대기 사유는 응답할 사람이 없어
         # HITL 알림·통계에 섞이면 안 된다.
         [[ "$pstat" == T* ]] && { status="stopped"; waiting=""; }
-        dir=$(basename "$cwd" 2>/dev/null)
-        # --json 은 waitingFor 를 안 주므로 세션 파일에서 폴백 (HITL 상세 사유)
-        [[ -z "$waiting" ]] && waiting=$(jq -r '.waitingFor // ""' \
-          "$HOME/.claude/sessions/$pid.json" 2>/dev/null)
+        # basename 프로세스를 안 띄운다 — 마지막 조각이 비는 건 cwd 가 '/' 일 때뿐.
+        dir="${cwd##*/}"; [[ -z "$dir" && -n "$cwd" ]] && dir="/"
+        # --json 은 waitingFor 를 안 주므로 세션 파일에서 폴백 (HITL 상세 사유).
+        # 파일을 셸로 먼저 읽어 그 키가 있을 때만 jq 를 부른다 — 이 파일들엔 대개
+        # waitingFor 가 없어서(실측: 10개 중 0개) 세션마다 jq 를 헛돌리고 있었다.
+        if [[ -z "$waiting" ]]; then
+          local sjf="$HOME/.claude/sessions/$pid.json" sjc
+          if [[ -f "$sjf" ]]; then
+            sjc=$(< "$sjf")
+            case "$sjc" in *'"waitingFor"'*)
+              waiting=$(jq -r '.waitingFor // ""' "$sjf" 2>/dev/null) ;;
+            esac
+          fi
+        fi
         case "$status" in
           busy)    icon="${YELLOW}●${RESET}"; st="busy" ;;
           waiting) icon="${RED}◐${RESET}";    st="wait" ;;
@@ -185,61 +239,72 @@ gen() {
         # 살릴 수 없는 잔재라는 것과 정리 수단(k)까지 한 줄에 적는다.
         [[ "$status" == stopped ]] && lab="${lab:+$lab }(정지됨 — k 로 정리)"
         # transcript 경로는 model/mode/ctx/실효cwd 공용이라 한 번만 계산.
-        local tx mdl pm ecwd toks pretty badge ctxc
-        tx=$(tx_of "$cwd" "$sid")
+        local tx mdl pm ecwd toks pretty badge ctxc sc
+        tx_of_r "$cwd" "$sid"; tx="$_r"
         # model / mode / 실효cwd / ctx토큰을 tail 1회 + awk 1회로 한꺼번에.
         # 꼬리 256KB 에 없는 값만 개별 헬퍼로 보강한다(그쪽에 전체 스캔 폴백이 있음).
-        IFS=$'\037' read -r mdl pm ecwd toks < <(tx_scan "$tx")
+        sc=$(tx_scan "$tx")
+        mdl="${sc%%$'\037'*}";  sc="${sc#*$'\037'}"
+        pm="${sc%%$'\037'*}";   sc="${sc#*$'\037'}"
+        ecwd="${sc%%$'\037'*}"; toks="${sc#*$'\037'}"
         [[ -z "$mdl"  ]] && mdl=$(model_of "$tx")
         [[ -z "$pm"   ]] && pm=$(mode_of "$tx")
         [[ -z "$ecwd" ]] && ecwd=$(cwd_of "$tx")
         [[ -z "$toks" ]] && toks=$(ctx_of "$tx")
-        pretty=$(model_pretty "$mdl")
-        badge=$(mode_badge "$pm")                # permission mode — default 면 빈 값
-        ctxc=$(ctx_cell_n "$toks")               # 목록에는 cpu% 대신 컨텍스트 사용률
+        model_pretty_r "$mdl"; pretty="$_r"
+        mode_badge_r "$pm";    badge="$_r"       # permission mode — default 면 빈 값
+        ctx_cell_n_r "$toks";  ctxc="$_r"        # 목록에는 cpu% 대신 컨텍스트 사용률
         # 프로젝트 그룹과 dir 컬럼은 시작 cwd 로 둔다(세션이 돌아다녀도 자리가
         # 안 튀게). 반면 브랜치·워크트리는 '지금 어디서 일하는지' 가 알고 싶은
         # 값이라 실효 cwd 로 뽑는다. 단 프로젝트 밖으로 나간 경우는 행이
         # 앞뒤로 안 맞게 되므로 시작 cwd 로 되돌린다.
-        local proj wt wtb
-        proj=$(git_root "$cwd"); proj="${proj:-$cwd}"
+        local proj wt wtb egd
+        git_root_r "$cwd"; proj="${_r:-$cwd}"
         case "$ecwd" in "$proj"|"$proj"/*) ;; *) ecwd="$cwd" ;; esac
-        wt=$(git_worktree "$ecwd")
-        wtb=$(wt_badge "$ecwd")
+        # ecwd 의 .git 을 한 번만 찾아 워크트리 이름·배지·2행 브랜치가 나눠 쓴다
+        # (예전엔 셋이 각자 상위로 거슬러 올라갔다).
+        git_dir_r "$ecwd"; egd="$_r"
+        git_worktree_r "$ecwd" "$egd"; wt="$_r"
+        wt_badge_r "$ecwd" "$egd";     wtb="$_r"
         # 활동 배지(🤖⚡🔭)는 state 뒤 고정 슬롯으로 — act_cell 주석 참조.
         # dir 뒤에 남는 건 워크트리 배지 → 상태 사유 순.
-        local nag nsh nmon nsrv ndkr actc actw tail1 bbadge; nag=$(sub_live "$tx")
-        IFS=$'\037' read -r nsh nmon < <(tasks_live "$tx" "$(epoch_iso "$started")")
+        local nag nsh nmon nsrv ndkr actc actw tail1 bbadge since tl
+        sub_live_r "$tx" "$NOW"; nag="$_r"
+        epoch_iso_r "$started"; since="$_r"
+        tl=$(tasks_live "$tx" "$since")
+        nsh="${tl%%$'\037'*}"; nmon="${tl#*$'\037'}"
         # 서버 수는 transcript 가 아니라 포트 맵에서 온다 — 이 세션 pid 를 조상으로
         # 두고 리스닝 중인 프로세스의 개수다 (servers.sh 주석 참조).
-        local sports; sports=$(srv_ports "$pid")
-        nsrv=$(srv_count "$sports")
+        local sports
+        srv_ports_r "$pid";    sports="$_r"
+        srv_count_r "$sports"; nsrv="$_r"
         # 컨테이너 수는 귀속 근거가 또 다르다 — 데몬이 물고 있어 프로세스 조상으로는
         # 못 잡으므로, compose 가 박아 둔 working_dir 라벨이 이 세션의 실효 cwd 와
         # 같은 것을 센다. preview 의 🐳 목록과 같은 기준이라 숫자가 어긋나지 않는다.
-        ndkr=$(dkr_count "$ecwd")
-        IFS=$'\037' read -r actc actw < <(act_cell "$nag" "$nsh" "$nmon" "$nsrv" "$ndkr")
-        # 보드 배지(⚠N)는 워크트리 배지 뒤 — '어디서 일하는지' 다음에 '누구와
+        dkr_count_r "$ecwd"; ndkr="$_r"
+        act_cell_r "$nag" "$nsh" "$nmon" "$nsrv" "$ndkr"; actc="$_r"; actw="$_r2"
+        # 보드 배지(⚠ N)는 워크트리 배지 뒤 — '어디서 일하는지' 다음에 '누구와
         # 겹치는지' 가 오는 순서다. 겹침이 없으면 빈 값이라 자리를 안 차지한다.
-        bbadge=$(board_badge "$sid")
+        board_badge_r "$sid"; bbadge="$_r"
         tail1="$wtb"
         [[ -n "$bbadge" ]] && tail1="${tail1:+$tail1 }$bbadge"
         if [[ "$status" == waiting ]]; then
           # HITL 세션 — 행 강조: ◐ WAIT 배지(icon+state 자리) + 굵은 빨강 텍스트.
           # 배지가 8칸이라 활동 슬롯을 바로 이어 붙이면 뒤 컬럼이 일반 행과 같은 열에 선다.
-          col1=$(printf '%s ◐ WAIT %s%s%s %s%s%s %s%s%s%s' \
-            "$HL" "$RESET" "$actc" "$ctxc" "${BOLD}${RED}" "$(dir_cell "$dir")" "$RESET" \
-            "${tail1:+$tail1 }" "${BOLD}${RED}" "$lab" "$RESET")
+          printf -v col1 '%s ◐ WAIT %s%s%s %s%s%s %s%s%s%s' \
+            "$HL" "$RESET" "$actc" "$ctxc" "${BOLD}${RED}" $'\036'"$dir"$'\035' "$RESET" \
+            "${tail1:+$tail1 }" "${BOLD}${RED}" "$lab" "$RESET"
         else
           # 정지 세션은 dir·사유를 한 톤 죽여 살아있는 행들 사이에서 눈에 덜 걸리게
           # 한다 (숨기지는 않는다 — 자식 프로세스를 물고 멈춰 있는 상태라 보여야 한다).
           local dirc="$BLUE" labc="$GRAY"
           [[ "$status" == stopped ]] && { dirc="$STOPC"; labc="$STOPC"; }
-          col1=$(printf '%s %-5s %s%s %s%s%s %s%s%s%s' \
-            "$icon" "$st" "$actc" "$ctxc" "$dirc" "$(dir_cell "$dir")" "$RESET" \
-            "${tail1:+$tail1 }" "$labc" "$lab" "$RESET")
+          printf -v col1 '%s %-5s %s%s %s%s%s %s%s%s%s' \
+            "$icon" "$st" "$actc" "$ctxc" "$dirc" $'\036'"$dir"$'\035' "$RESET" \
+            "${tail1:+$tail1 }" "$labc" "$lab" "$RESET"
         fi
-        col1="$col1$VT$(meta_line "$ecwd" "$pretty" "$badge")"
+        meta_line_r "$ecwd" "$pretty" "$badge" "$egd"
+        col1="$col1$VT$_r"
         # 15~19 는 헤더 통계(stats)용 원자료 — 배지 개수와 모델은 col1 에 렌더만 돼
         # 있어 다시 못 뽑으므로 여기서 같이 실어 보낸다. 렌더에는 안 쓴다.
         # 20(포트 목록)은 preview 몫이다 — 별개 프로세스라 SRV_MAP 을 못 물려받는데,
@@ -255,7 +320,7 @@ gen() {
         printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n' \
           "$col1" "$pid" "$tty" "$sid" "$cwd" "$started" "$status" "$waiting" "$name" "$cpu" "$rssmb" "$proj" "$wt" "$actw" \
           "${nag:-0}" "${nsh:-0}" "${nmon:-0}" "$pretty" "${nsrv:-0}" "${sports:-}" "${ecwd:-}"
-     done
+     done <<< "$rows"
 }
 
 # ---------------------------------------------------------------------------
