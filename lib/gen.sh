@@ -376,8 +376,8 @@ gen() {
           stopped)  icon="${STOPC}⊘${RESET}";  st="stop" ;;
           # 아이콘 자리를 상태 점이 아니라 '위 행이 낳았다' 는 표시로 쓴다. 어차피
           # 이 세션엔 busy/idle 을 알려 줄 쪽이 없고, 정렬상 부모 바로 밑에 서므로
-          # 그 자리에서 가장 쓸모 있는 한 글자가 소속이다 (들여쓰기로 하지 않은 건
-          # 뒤의 act/ctx/dir 열이 통째로 밀려서다).
+          # 그 자리에서 가장 쓸모 있는 한 글자가 소속이다. 행 자체도 한 단 들여쓴다
+          # (HDLS_IND) — 뒤의 act/ctx/dir 열이 그만큼 밀리는 값을 치른다.
           headless) icon="${HDLSC}${HDLS_ICON}${RESET}"; st="$HDLS_ST" ;;
           *)        icon="${DIM}·${RESET}";    st="${status:0:4}" ;;
         esac
@@ -454,6 +454,10 @@ gen() {
         board_badge_r "$sid"; bbadge="$_r"
         tail1="$wtb"
         [[ -n "$bbadge" ]] && tail1="${tail1:+$tail1 }$bbadge"
+        # headless 자식 행은 부모 밑으로 한 단 들여쓴다. 몇 단인지는 여기서 못 정한다 —
+        # 부모 사슬의 깊이는 행을 매다는 gen_all 만 아는 값이다. 그래서 자리만 마커로
+        # 잡아 두고(1행 머리·2행 메타 두 군데) 채우는 건 그쪽에 맡긴다.
+        local hind=""; [[ -n "$hl" ]] && hind=$'\005'
         if [[ "$status" == waiting ]]; then
           # HITL 세션 — 행 강조: ◐ WAIT 배지(icon+state 자리) + 굵은 빨강 텍스트.
           # 배지가 8칸이라 활동 슬롯을 바로 이어 붙이면 뒤 컬럼이 일반 행과 같은 열에 선다.
@@ -468,13 +472,13 @@ gen() {
           local dirc="$BLUE" labc="$GRAY"
           [[ "$status" == stopped ]]  && { dirc="$STOPC"; labc="$STOPC"; }
           [[ "$status" == headless ]] && { dirc="$HDLSC"; labc="$HDLSC"; }
-          printf -v col1 '%s %-5s %s%s %s%s%s %s%s%s%s' \
-            "$icon" "$st" "$actc" "$ctxc" "$dirc" $'\036'"$dir"$'\035' "$RESET" \
+          printf -v col1 '%s%s %-5s %s%s %s%s%s %s%s%s%s' \
+            "$hind" "$icon" "$st" "$actc" "$ctxc" "$dirc" $'\036'"$dir"$'\035' "$RESET" \
             "${tail1:+$tail1 }" "$labc" "$lab" "$RESET"
         fi
         # 부모 이름은 2행 앞자리로 — 1행은 '무엇을 시켰나' 가 이미 차지했다.
         meta_line_r "$ecwd" "$pretty" "$badge" "$egd" "$pname_s"
-        col1="$col1$VT$_r"
+        col1="$col1$VT$hind$_r"
         # 15~19 는 헤더 통계(stats)용 원자료 — 배지 개수와 모델은 col1 에 렌더만 돼
         # 있어 다시 못 뽑으므로 여기서 같이 실어 보낸다. 렌더에는 안 쓴다.
         # 20(포트 목록)은 preview 몫이다 — 별개 프로세스라 SRV_MAP 을 못 물려받는데,
@@ -533,7 +537,20 @@ gen_all() {
   # 프로젝트명은 볼드로 뽑는다 (2행의 흐린 메타 줄과 확실히 대비되게).
   { gen; gen_cursor; gen_codex; } | awk -F'\037' \
       -v VT="$VT" -v RULE="$GRAY" -v NAME="${BOLD}${BLUE}" \
-      -v Z="$RESET" -v AV="$avail" '
+      -v Z="$RESET" -v AV="$avail" -v IND="$HDLS_IND" -v INDMAX="$HDLS_IND_MAX" '
+    # emit <레코드> <깊이> : gen 이 남긴 들여쓰기 자리(\005)를 그 깊이만큼의 공백으로
+    #   채워 내보낸다. 한 행에 두 군데(1행 머리·2행 메타)라 gsub 이고, headless 가
+    #   아닌 행에는 마커가 없어 그냥 지나간다. 들여쓰는 폭을 gen 이 아니라 여기서
+    #   정하는 건 깊이를 아는 쪽이 여기뿐이어서다 — 자식을 부모 밑에 매다는 것도,
+    #   그 자식의 자식까지 내려가는 것도 이 awk 다.
+    #   부모를 못 찾아 제 자리에 서는 headless 행은 깊이 0 이다. 가리킬 위 줄이
+    #   없는데 들여쓰면 없는 소속을 지어내는 셈이 된다.
+    function emit(r, d,   n, s) {
+      n = IND * d; if (n > INDMAX) n = INDMAX
+      s = ""; while (length(s) < n) s = s " "
+      gsub(/\005/, s, r)
+      print r
+    }
     # emitkids <부모pid> <깊이> : 그 행이 낳은 headless 자식들을 이어서 뽑는다.
     #   자식이 또 자식을 낳는 경우(하네스가 띄운 세션이 다시 -p 를 부르는 꼴)가
     #   있어 재귀로 내려간다 — 한 단만 뽑으면 손자 행이 목록에서 통째로 사라진다.
@@ -541,7 +558,7 @@ gen_all() {
     #   생길 수 없지만, 생기면 여기서 무한 재귀가 되기 때문에 막아 둔다.
     function emitkids(p, d,   c) {
       if (d > 8) return
-      for (c = 1; c <= kn[p]; c++) { print kid[p, c]; emitkids(kpid[p, c], d + 1) }
+      for (c = 1; c <= kn[p]; c++) { emit(kid[p, c], d); emitkids(kpid[p, c], d + 1) }
     }
     NF {
       # headless 자식(22=부모 pid)은 제 순서 자리에 안 세우고 부모 밑에 매달아 둔다.
@@ -577,11 +594,11 @@ gen_all() {
         # 바로 위 줄을 가리키므로, 사이에 다른 세션이 끼면 엉뚱한 행을 가리키게 된다.
         first=1
         for (m=1; m<=ncnt[k]; m++) {
-          print (first ? hdr : "") rows[k,"n" m]; first=0
+          emit((first ? hdr : "") rows[k,"n" m], 0); first=0
           emitkids(rpid[k,"n" m], 1)
         }
         for (m=1; m<=scnt[k]; m++) {
-          print (first ? hdr : "") rows[k,"s" m]; first=0
+          emit((first ? hdr : "") rows[k,"s" m], 0); first=0
           emitkids(rpid[k,"s" m], 1)
         }
       }

@@ -20,9 +20,10 @@
 #   를 짧게 캐시하고 갱신은 백그라운드)이다. 그래서 포그라운드로 띄운 서버도
 #   잡히고, 죽으면 바로 사라진다.
 #   waiting(HITL) 은 벨 + macOS 알림 (CC_TOP_NOTIFY=0 으로 끔).
-#   headless(`claude -p`) 세션은 '↳ hdls' 로 자기를 낳은 세션 바로 밑에 붙는다 —
-#   부모는 프로세스 트리를 거슬러(끊겼으면 scratchpad 경로로) 찾고, 프로젝트 그룹도
-#   부모 것을 따른다. 1행에 -p 프롬프트가 붙고 bypass 배지는 톤을 낮춘다.
+#   headless(`claude -p`) 세션은 '↳ hdls' 로 자기를 낳은 세션 바로 밑에, 한 단
+#   들여써서 붙는다 — 부모는 프로세스 트리를 거슬러(끊겼으면 scratchpad 경로로)
+#   찾고, 프로젝트 그룹도 부모 것을 따른다. 1행에 -p 프롬프트가 붙고 bypass 배지는
+#   톤을 낮춘다.
 #
 # 데이터: `claude agents --json` + cursor-agent/codex CLI(iTerm2 화면 문구 매칭으로 HITL 감지)
 # 점프  : pid -> tty(ps) -> iTerm2 AppleScript(select+activate)
