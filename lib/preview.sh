@@ -5,11 +5,13 @@
 # 하나 안에서 공유되므로, 여기 정의는 다른 모듈에서 그대로 보인다.
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-# --preview pid tty sid cwd started status waiting name
+# --preview pid tty sid cwd started status waiting name [부모pid] [부모이름]
+#   부모 둘은 headless(-p) 행에만 채워져 온다 (gen 의 필드 22·23).
 # ---------------------------------------------------------------------------
 preview() {
   local pid="${1:-}" tty="${2:-}" sid="${3:-}" cwd="${4:-}" started="${5:-0}"
   local status="${6:-}" waiting="${7:-}" name="${8:-}"
+  local ppid_s="${9:-}" pname_s="${10:-}"
   local title="${name:-$(basename "$cwd" 2>/dev/null)}"
 
   # 활동 모드('p' 세 번째)는 화면을 통째로 쓰는 다른 그림이다 — 여기서 갈라진다.
@@ -36,8 +38,17 @@ preview() {
     # 여기서 바로 k 를 누를 판단이 선다.
     [[ "$status" == stopped ]] && \
       stline="${STOPC}⊘ stopped${RESET}  ${DIM}(SIGTSTP 로 멈춘 잔재 — SIGTERM 안 통함, k 로 정리)${RESET}"
+    # headless 는 '상태를 못 읽은' 것이 아니라 읽을 상태를 만들 쪽이 없는 것이다.
+    # 그 구분이 안 서면 목록의 'hdls' 를 버그로 읽게 되므로 여기서 한 번 풀어 준다.
+    [[ "$status" == headless ]] && \
+      stline="${HDLSC}${HDLS_ICON} headless${RESET}  ${DIM}(claude -p — 사람이 앉지 않는 세션, busy/idle 보고 없음)${RESET}"
     printf '%sstatus %s %s\n' "$GRAY" "$RESET" "$stline"
   fi
+  # 부모는 cwd 보다 위다 — headless 행에서 가장 먼저 알고 싶은 것이 '누가 띄웠나'
+  # 이고, scratchpad 경로는 그걸 알고 난 뒤에야 뜻이 생긴다.
+  [[ -n "$pname_s" || -n "$ppid_s" ]] && \
+    printf '%sparent %s %s%s %s%s%s\n' "$GRAY" "$RESET" \
+      "$HDLSC" "$HDLS_ICON" "${pname_s:-?}" "${ppid_s:+  #$ppid_s}" "$RESET"
   printf '%scwd    %s %s\n' "$GRAY" "$RESET" "$cwd"
   # 세션이 시작 디렉터리를 떠나 워크트리 등에서 작업 중이면 현재 위치를 덧붙이고,
   # 브랜치·워크트리도 그 위치 기준으로 뽑는다 (목록 행과 같은 기준).

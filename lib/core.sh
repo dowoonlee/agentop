@@ -25,7 +25,7 @@ _r=""; _r2=""
 # ---------------------------------------------------------------------------
 # mode_of <transcript.jsonl> : 세션의 현재 permission mode (shift+tab 토글).
 #   토글 시마다 transcript 에 permission-mode 레코드가 기록됨 → 마지막 값이 현재.
-# mode_badge <mode> : 목록 행용 색 배지. default 는 노이즈라 표시 안 함.
+# mode_badge <mode> [muted] : 목록 행용 색 배지. default 는 노이즈라 표시 안 함.
 # ---------------------------------------------------------------------------
 mode_of() {
   [[ -f "${1:-}" ]] || return 0
@@ -40,18 +40,56 @@ mode_of() {
   return 0
 }
 
-mode_badge_r() {
+mode_badge_r() {   # <mode> [muted — 비어 있지 않으면 톤을 낮춘다]
+  # muted 는 headless(-p) 행이 쓴다. 사람이 승인할 수 없는 세션이라 bypass 가
+  # 기본값에 가까운데, 빨강으로 두면 그 줄에서 가장 시끄러운 것이 가장 뜻이 없는
+  # 자리가 된다. 지운다는 선택도 있지만 '무엇이든 할 수 있는 세션' 인 건 여전히
+  # 사실이라, 없애지 않고 회색으로 낮춰 둔다.
   case "${1:-}" in
     acceptEdits)       _r="${YELLOW}⏵⏵accept${RESET}" ;;
     plan)              _r="${BLUE}⏸ plan${RESET}"     ;;
-    bypassPermissions) _r="${RED}⏵⏵BYPASS${RESET}"    ;;
+    bypassPermissions)
+      if [[ -n "${2:-}" ]]; then _r="${GRAY}⏵⏵bypass${RESET}"
+      else                       _r="${RED}⏵⏵BYPASS${RESET}"; fi ;;
     # default·auto 는 사실상 모든 세션에 붙어 노이즈라 목록에선 생략한다
     # (preview 의 mode 줄에는 원래 값이 그대로 나온다)
     default|auto|'')   _r=""                          ;;
     *)                 _r="${GRAY}${1}${RESET}"       ;;
   esac
 }
-mode_badge() { mode_badge_r "${1:-}"; printf '%s' "$_r"; }
+mode_badge() { mode_badge_r "${1:-}" "${2:-}"; printf '%s' "$_r"; }
+
+# ---------------------------------------------------------------------------
+# hdls_argv_r <ps args 한 줄> : headless(-p) 세션인지 + 그 세션에 던져진 프롬프트.
+#   판정 근거를 tty/status 가 아니라 argv 로 두는 이유 — 없는 tty 도 없는 status 도
+#   증상이지 원인이 아니다. 터미널을 잃은 대화형 세션이나 아직 등록 전인 세션도
+#   같은 증상을 내므로, 세션을 headless 로 만드는 그 플래그(-p/--print)를 직접 본다.
+#   프롬프트는 -p 다음부터 다음 '--플래그' 직전까지 — claude 는 프롬프트를 따옴표로
+#   묶지 않아도 받으므로 여러 단어로 쪼개져 들어온다.
+#   결과: _r = 1(headless) / 빈 값,  _r2 = 프롬프트 (없으면 빈 값)
+# ---------------------------------------------------------------------------
+hdls_argv_r() {   # <argv>
+  local a=" ${1:-} " rest w
+  _r=""; _r2=""
+  case "$a" in
+    *" -p "*|*" --print "*|*" -p"|*" --print") ;;
+    *) return 0 ;;
+  esac
+  _r=1
+  # -p 뒤를 프롬프트로 본다. --print 는 값을 안 받는 형태로도 쓰여(stdin 입력)
+  # 뒤가 곧장 플래그면 빈 프롬프트가 나오는데, 그건 그대로 빈 값이 맞다.
+  case "$a" in
+    *" -p "*)      rest="${a#* -p }" ;;
+    *" --print "*) rest="${a#* --print }" ;;
+    *)             return 0 ;;
+  esac
+  for w in $rest; do
+    case "$w" in --*) break ;; esac
+    _r2="${_r2:+$_r2 }$w"
+  done
+  return 0
+}
+hdls_argv() { hdls_argv_r "${1:-}"; printf '%s' "$_r2"; }
 
 # ---------------------------------------------------------------------------
 # cwd_of <transcript.jsonl> : 세션의 '실효' 작업 디렉터리.

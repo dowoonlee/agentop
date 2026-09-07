@@ -103,17 +103,19 @@ notify_hitl() {
 summary() {
   local lst="${CC_TOP_LST:-/dev/null}"
   [[ -s "$lst" ]] || { printf ''; return 0; }
-  awk -F'\037' -v B="$YELLOW" -v R="$RED" -v G="$GRAY" -v Z="$RESET" -v BL="$BLUE" -v S="$STOPC" '
+  awk -F'\037' -v B="$YELLOW" -v R="$RED" -v G="$GRAY" -v Z="$RESET" -v BL="$BLUE" -v S="$STOPC" \
+      -v H="$HDLSC" '
     { n++; s=$7
-      if ($4 ~ /^cursor:/)   cur++        # cursor 세션은 별도 표기 + 상태 집계에도 합산
-      if ($4 ~ /^codex:/)    cdx++        # codex 세션도 동일 (오버레이 카운트)
-      if      (s=="busy")    busy++
-      else if (s=="waiting") wait++
-      else if (s=="idle")    idle++
-      else if (s=="stopped") stop++       # 정지(SIGTSTP) 잔재 — 살아있는 셋과 따로 센다
-      else if (s=="cursor")  { }          # 화면 못 읽어 상태 미상 — cur 에만 카운트
-      else if (s=="codex")   { }          #   "          "        — cdx 에만 카운트
-      else                   other++
+      if ($4 ~ /^cursor:/)    cur++       # cursor 세션은 별도 표기 + 상태 집계에도 합산
+      if ($4 ~ /^codex:/)     cdx++       # codex 세션도 동일 (오버레이 카운트)
+      if      (s=="busy")     busy++
+      else if (s=="waiting")  wait++
+      else if (s=="idle")     idle++
+      else if (s=="stopped")  stop++      # 정지(SIGTSTP) 잔재 — 살아있는 셋과 따로 센다
+      else if (s=="headless") hdls++      # -p 로 띄운 자식 — busy/idle 을 알려 줄 쪽이 없다
+      else if (s=="cursor")   { }         # 화면 못 읽어 상태 미상 — cur 에만 카운트
+      else if (s=="codex")    { }         #   "          "        — cdx 에만 카운트
+      else                    other++
       cpu += $10+0; rss += $11+0 }
     END {
       if (n==0) { printf ""; exit }
@@ -121,6 +123,7 @@ summary() {
       printf "%s%d sessions%s  %sbusy %d%s · %swait %d%s · %sidle %d%s",
         BL, n, Z, B, busy+0, Z, wcol, wait+0, Z, G, idle+0, Z
       if (stop>0)  printf " · %sstop %d%s",   S, stop+0, Z
+      if (hdls>0)  printf " · %shdls %d%s",   H, hdls+0, Z
       if (cur>0)   printf " · %scursor %d%s", G, cur+0, Z
       if (cdx>0)   printf " · %scodex %d%s",  G, cdx+0, Z
       if (other>0) printf " · %s? %d%s",      G, other+0, Z

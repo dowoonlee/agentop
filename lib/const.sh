@@ -183,3 +183,23 @@ BOARD_EMOJI='⚠'                 # 1행 배지 — 겹치는 파일 수
 BOARDC=$'\e[38;5;173m'          # 보드 배지색 (주황 — 상태 빨강/노랑과 구분되는 톤)
 BOARD_BLK_MAX=6                 # preview 보드 섹션에 나열할 최대 파일 수
 BOARD_BLK_PATH_W=44             # preview 보드 섹션 경로 컬럼 폭
+
+# ---- headless(-p) 자식 세션 ----
+# `claude -p` 로 띄운 세션에는 사람이 앉아 있지 않다 — 대개 다른 세션이 백그라운드
+# 태스크로 낳는다(평가 하네스·배치 생성). 그런데 `claude agents --json` 이 이 세션의
+# status 를 안 실어 주고, cwd 가 대개 scratchpad 라 브랜치도 없다. 손대기 전에는
+# '· ?  r1  (detached) / ⎇ no-git · fable5.1 · ⏵⏵BYPASS' 로 그려져서, 줄에서 가장
+# 시끄러운 빨강 BYPASS 가 가장 뜻이 없는 자리를 차지하고 정작 '누가 왜 띄웠나' 는
+# 어디에도 없었다. 그래서 아이콘·상태·귀속·모드 톤을 전부 따로 둔다.
+HDLS_ST='hdls'                  # state 컬럼 값 (busy/wait/idle/stop 과 같은 자리)
+HDLS_ICON='↳'                   # 1행 아이콘 — 바로 위 부모 행이 낳았다는 표시.
+                                #   2행 메타의 '└' 와 모양을 다르게 골랐다 (같은 기호면
+                                #   행 소속 표시인지 메타 줄인지 눈이 헷갈린다).
+HDLSC=$'\e[38;5;66m'            # headless 행 색 (탁한 청록). 살아있는 행보다 죽이되
+                                #   STOPC(정지 잔재)보다는 밝다 — 돌고 있지만 사람이
+                                #   들여다볼 화면은 아니라는 중간 톤.
+HDLS_PROMPT_MAX=30              # 1행에 붙일 -p 프롬프트 조각의 최대 표시폭
+HDLS_HOP_MAX=12                 # 부모 세션을 찾아 ppid 를 거슬러 오를 최대 단계.
+                                #   claude -p → python → zsh → claude 처럼 3~4 단계가
+                                #   보통이고, SRV_ANCESTOR_MAX 와 같은 이유로 순환이
+                                #   생겨도 여기서 멈춘다.

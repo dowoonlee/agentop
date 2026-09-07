@@ -60,24 +60,34 @@ act_cell_r() {   # 셀은 _r, 표시폭은 _r2 로 낸다 (값이 둘인 유일�
 act_cell() { act_cell_r "${1:-}" "${2:-0}" "${3:-0}" "${4:-0}" "${5:-0}"; printf '%s\037%s' "$_r" "$_r2"; }
 
 # ---------------------------------------------------------------------------
-# meta_line <cwd> [model_pretty] [mode_badge] : 행의 2번째 줄.
+# meta_line <cwd> [model_pretty] [mode_badge] [git_dir] [부모라벨] : 행의 2번째 줄.
 #   '⎇ 브랜치 · 모델 · 권한모드' 를 ' · ' 로 이어 붙인다. 모델은 1행 배지처럼
 #   축약(op5)하지 않고 full name(opus5/sonnet4.5/…) 그대로 — 2행을 쓰는 이유.
 #   cursor/codex 세션은 모델/모드가 없어 브랜치만 나온다. git 저장소가 아니면
 #   세그먼트를 빼지 않고 'no-git' 을 흐리게 박는다 — 자리가 비면 '브랜치를 못
 #   읽은 건지 저장소가 아닌 건지' 헷갈리므로 항상 명시한다.
+#
+#   부모라벨이 있으면(headless 자식 행) 브랜치 앞자리를 그것이 가져간다. 이 행에서
+#   가장 알고 싶은 값이 '누가 낳았나' 인데다, 자식은 대개 scratchpad 에 앉아 브랜치
+#   자리가 'no-git' 으로 비어 있어서다. 저장소 안에서 도는 자식이면 브랜치도 뒤에
+#   함께 남는다 — 둘 다 뜻이 있는 값이라 어느 쪽도 지우지 않는다.
 # ---------------------------------------------------------------------------
-meta_line_r() {   # <cwd> [모델] [모드배지] [이미 구해 둔 git_dir]
-  local cwd="${1:-}" pretty="${2:-}" badge="${3:-}" gd="${4:-}" br out="" sep mc
+meta_line_r() {   # <cwd> [모델] [모드배지] [이미 구해 둔 git_dir] [부모라벨]
+  local cwd="${1:-}" pretty="${2:-}" badge="${3:-}" gd="${4:-}" par="${5:-}" br out="" sep mc
   sep="${DIM} · ${RESET}"
+  [[ -n "$par" ]] && out="${HDLSC}↳ ${par}${RESET}"
   git_branch_r "$cwd" "$gd"; br="$_r"
-  if [[ -n "$br" ]]; then
+  if [[ -n "$par" && -z "$br" ]]; then
+    # 부모를 이미 적었으면 'no-git' 은 뺀다 — scratchpad 자식에게 저장소가 없는 건
+    # 알려 줄 사실이 아니라 당연한 것이고, 자리만 먹으면서 고아처럼 읽힌다.
+    :
+  elif [[ -n "$br" ]]; then
     # 긴 브랜치명이 뒤의 모델/모드를 밀어내지 않게 잘라 표시 (전체 값은 preview 에).
     # 목록만(wide) 모드는 자리가 넉넉하므로 원문 그대로.
     if (( ! WIDE )) && (( ${#br} > META_BR_MAX )); then br="${br:0:$((META_BR_MAX-1))}…"; fi
-    out="${GREENB}⎇ ${br}${RESET}"
+    out+="${out:+$sep}${GREENB}⎇ ${br}${RESET}"
   else
-    out="${DIM}⎇ no-git${RESET}"
+    out+="${out:+$sep}${DIM}⎇ no-git${RESET}"
   fi
   if [[ -n "$pretty" ]]; then
     model_color_r "$pretty"; mc="$_r"
@@ -86,7 +96,88 @@ meta_line_r() {   # <cwd> [모델] [모드배지] [이미 구해 둔 git_dir]
   [[ -n "$badge" ]] && out+="${out:+$sep}${badge}"
   _r="${META_IND}${DIM}└${RESET} ${out}"
 }
-meta_line() { meta_line_r "${1:-}" "${2:-}" "${3:-}" "${4:-}"; printf '%s' "$_r"; }
+meta_line() { meta_line_r "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}"; printf '%s' "$_r"; }
+
+# ---------------------------------------------------------------------------
+# hdls_parent_r <pid> <세션pid집합> : headless 행을 낳은 '세션' 의 pid.
+#   claude -p 는 세션이 직접 exec 하는 일이 거의 없다 — 세션 → Bash(백그라운드) →
+#   스크립트 → claude 처럼 두세 단계를 건너 태어난다. 그래서 ppid 를 한 번 보는
+#   걸로는 못 찾고, 세션 목록에 있는 pid 가 나올 때까지 거슬러 올라야 한다.
+#   중간 프로세스(python·zsh)는 세션이 아니라 PS_MAP 에 없으므로, 여기서만 쓰는
+#   전역 pid→ppid 맵을 '처음 필요할 때' 한 번 만든다 (ps -axo 1회, ~15ms).
+#   headless 세션이 하나도 없는 화면에서는 이 맵을 아예 안 만든다 — 대부분의
+#   화면이 그쪽이라 폴링 비용에 얹히지 않는다.
+#
+#   사슬이 끊기는 경우가 있다 — 중간 프로세스가 자식을 띄우고 먼저 빠지면 자식은
+#   launchd(1) 로 재부모화되어 여기서 아무것도 안 나온다. 그때는 hdls_scratch_sid_r
+#   이 경로로 한 번 더 시도한다.
+# ---------------------------------------------------------------------------
+PPID_MAP=""
+hdls_parent_r() {   # <pid> <' pid pid ' 꼴 세션 pid 집합>
+  local p="${1:-}" set="${2:-}" hop=0 par
+  _r=""
+  [[ -n "$p" && -n "$set" ]] || return 0
+  if [[ -z "$PPID_MAP" ]]; then
+    PPID_MAP=$'\n'$(ps -axo pid=,ppid= 2>/dev/null | LC_ALL=C awk '{ print $1" "$2 }')$'\n'
+  fi
+  while (( hop++ < HDLS_HOP_MAX )); do
+    case "$PPID_MAP" in
+      *$'\n'"$p "*) par="${PPID_MAP#*$'\n'"$p" }"; par="${par%%$'\n'*}" ;;
+      *) return 0 ;;
+    esac
+    [[ "$par" =~ ^[0-9]+$ ]] && (( par > 1 )) || return 0
+    case "$set" in *" $par "*) _r="$par"; return 0 ;; esac
+    p="$par"
+  done
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# hdls_scratch_sid_r <cwd> : scratchpad 경로에 박힌 부모 sessionId.
+#   harness 는 세션마다 /tmp/claude-<uid>/<프로젝트>/<sessionId>/scratchpad 를 주고,
+#   거기서 태어난 자식은 그 아래에 앉는다 — 경로 자체가 부모를 적고 있는 셈이다.
+#   ppid 사슬이 끊긴 자식(중간 프로세스가 먼저 빠져 launchd 로 넘어간 경우)에서
+#   유일하게 남는 근거라 폴백으로 둔다.
+#
+#   sessionId 자리가 UUID 꼴일 때만 받는다. 이 규약은 harness 사정이라 언제든
+#   바뀔 수 있고, 모양이 안 맞는데도 마지막 조각을 부모로 삼으면 엉뚱한 세션에
+#   행을 매다는 쪽이 아무 데도 안 매다는 것보다 나쁘다.
+# ---------------------------------------------------------------------------
+hdls_scratch_sid_r() {   # <cwd>
+  local c="${1:-}" head
+  _r=""
+  case "$c" in
+    */scratchpad)   head="${c%/scratchpad}"    ;;
+    */scratchpad/*) head="${c%%/scratchpad/*}" ;;
+    *) return 0 ;;
+  esac
+  head="${head##*/}"
+  case "$head" in
+    ????????-????-????-????-????????????) _r="$head" ;;
+  esac
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# hdls_dir_r <cwd> : headless 행의 dir 컬럼 값.
+#   자식은 대개 회차별 작업공간에 앉는데(…/eval5608/r1), 다른 행들처럼 마지막
+#   조각만 쓰면 'r1' 만 남아 아무것도 안 알려 준다. 뜻이 있는 부분은 한 칸 위에
+#   있으므로 그럴 때만 두 조각을 쓴다.
+#
+#   '그럴 때' 를 마지막 조각의 길이로 가른다 — r1·r2·a·01 처럼 짧은 이름은 회차
+#   번호지 작업 이름이 아니다. 조건 없이 두 조각을 쓰면 반대로 나빠지는 경우가
+#   있어서다: /var/…/T/hdlschain.Qa1PWr 는 앞 조각이 'T' 라 뜻이 없는데, 그 두
+#   칸을 채우려고 정작 이름 쪽이 잘려 'T/hdlschain.Qa1P…' 가 된다.
+# ---------------------------------------------------------------------------
+HDLS_DIR_SHORT=4                # 이 길이 이하의 마지막 조각은 회차 번호로 본다
+hdls_dir_r() {   # <cwd>
+  local c="${1:-}" last rest
+  last="${c##*/}"; rest="${c%/*}"
+  _r="$last"
+  (( ${#last} <= HDLS_DIR_SHORT )) || return 0
+  [[ -n "$rest" && "$rest" != "$c" && "${rest##*/}" != "" ]] && _r="${rest##*/}/$last"
+  return 0
+}
 
 # ---------------------------------------------------------------------------
 # sub_live <transcript> : 최근 SUB_LIVE 초 안에 쓰기가 있었던 서브에이전트 수.
@@ -172,12 +263,29 @@ gen() {
   # 이어 한 번에 묻고, 각 행은 아래에서 파라미터 확장으로 제 줄만 집어 간다.
   # awk 로 필드를 다시 짜는 건 ps -o pid= 가 폭에 맞춰 앞을 공백으로 채우기
   # 때문 — 그대로 두면 pid 앞 공백 수가 자릿수마다 달라 매칭이 어긋난다.
-  local plist="" PS_MAP="" NOW p
-  while IFS=$'\037' read -r p _; do
-    [[ -n "$p" ]] && plist="${plist:+$plist,}$p"
+  # ($1=$1 은 레코드를 OFS 로 다시 조립해 공백 런을 한 칸으로 만든다. args 가
+  #  뒤에 붙어 필드 수가 행마다 달라지므로 자리를 하나씩 세지 않는 쪽을 골랐다.)
+  #
+  # args 를 같이 받는 건 headless(-p) 판정 때문이다 — 그 근거를 tty 나 status 가
+  # 아니라 argv 에 두는 이유는 hdls_argv_r 주석에 있다. 덤으로 그 세션에 던져진
+  # 프롬프트도 여기서 나와, 1행에 '무엇을 시켰나' 를 적을 수 있다.
+  #
+  # PID_SET 은 부모를 거슬러 오를 때 '어디서 멈출지' 의 기준이다 (hdls_parent_r).
+  # ROW_BY_PID 는 찾은 부모의 cwd·이름을 다시 꺼내는 자리 — 부모가 루프의 뒤쪽에
+  # 있을 수도 있어(pid 순서상) 루프 안에서 되짚을 수가 없다.
+  # PID_BY_SID 는 ppid 사슬이 끊긴 자식의 폴백용 — scratchpad 경로에서 뽑은 부모
+  # sessionId 를 pid 로 되돌린다 (hdls_scratch_sid_r).
+  local plist="" PS_MAP="" PID_SET=" " ROW_BY_PID="" PID_BY_SID="" NOW p pcwd pname0 psid0
+  while IFS=$'\037' read -r p _ _ pcwd pname0 psid0 _; do
+    [[ -n "$p" ]] || continue
+    plist="${plist:+$plist,}$p"
+    PID_SET+="$p "
+    ROW_BY_PID+=$'\n'"$p"$'\037'"$pcwd"$'\037'"$pname0"
+    [[ -n "$psid0" ]] && PID_BY_SID+=$'\n'"$psid0"$'\037'"$p"
   done <<< "$rows"
-  [[ -n "$plist" ]] && PS_MAP=$'\n'$(ps -o pid=,tty=,%cpu=,rss=,stat= -p "$plist" 2>/dev/null \
-    | LC_ALL=C awk '{ print $1" "$2" "$3" "$4" "$5 }')$'\n'
+  ROW_BY_PID+=$'\n'; PID_BY_SID+=$'\n'
+  [[ -n "$plist" ]] && PS_MAP=$'\n'$(ps -o pid=,tty=,%cpu=,rss=,stat=,args= -p "$plist" 2>/dev/null \
+    | LC_ALL=C awk '{ $1=$1; print }')$'\n'
   # sub_live 가 세션마다 date 를 부르지 않도록 지금 시각도 한 번만 구한다.
   NOW=$(date +%s)
 
@@ -189,14 +297,17 @@ gen() {
         # tty + cpu + rss + stat 은 위에서 받아 둔 ps 한 벌에서 제 줄만 집어 온다.
         # cpu 는 정수%(리스트 표시·서명용), rss 는 MB(요약/preview 용).
         # cpu 정수화로 idle(0%) 은 서명 안정 → 깜빡임 없음.
-        local ptty pcpu prss pstat
-        ptty=""; pcpu=""; prss=""; pstat=""
+        local ptty pcpu prss pstat pargs
+        ptty=""; pcpu=""; prss=""; pstat=""; pargs=""
         case "$PS_MAP" in *$'\n'"$pid "*)
           psline="${PS_MAP#*$'\n'"$pid" }"; psline="${psline%%$'\n'*}"
           ptty="${psline%% *}";  psline="${psline#* }"
           pcpu="${psline%% *}";  psline="${psline#* }"
           prss="${psline%% *}";  psline="${psline#* }"
-          pstat="${psline%% *}" ;;
+          pstat="${psline%% *}"
+          # stat 뒤에 공백이 없으면 args 가 안 붙은 줄이다. 그때 `${psline#* }` 는
+          # 원본을 그대로 돌려주므로(패턴 불일치) pargs 에 stat 이 새어 들어간다.
+          case "$psline" in *" "*) pargs="${psline#* }" ;; esac ;;
         esac
         tty="${ptty:-}"
         [[ -z "$tty" || "$tty" == "??" ]] && tty="-"
@@ -209,8 +320,43 @@ gen() {
         # waitingFor 도 함께 지운다: 멈춘 세션의 대기 사유는 응답할 사람이 없어
         # HITL 알림·통계에 섞이면 안 된다.
         [[ "$pstat" == T* ]] && { status="stopped"; waiting=""; }
+        # headless(-p) 세션 판정. --json 이 status 를 안 실어 주므로 그대로 두면
+        # 아래 case 의 '*)' 로 떨어져 '· ?' 가 된다 — 상태를 모르는 게 아니라
+        # 사람이 앉을 자리가 없는 세션이니, 없는 상태를 추측하지 말고 그렇게 적는다.
+        # 정지 잔재는 그쪽이 더 급한 사실이라 headless 로 덮지 않는다.
+        local hl="" hprompt="" ppid_s="" pcwd_s="" pname_s="" prow psid_s
+        if [[ "$status" != stopped ]]; then
+          hdls_argv_r "$pargs"; hl="$_r"; hprompt="$_r2"
+        fi
+        if [[ -n "$hl" ]]; then
+          status="headless"
+          # 1순위는 ppid 사슬 — 자식이 어디에 앉아 있든 잡힌다.
+          hdls_parent_r "$pid" "$PID_SET"; ppid_s="$_r"
+          # 사슬이 끊겼으면 scratchpad 경로에 박힌 sessionId 로 한 번 더.
+          if [[ -z "$ppid_s" ]]; then
+            hdls_scratch_sid_r "$cwd"; psid_s="$_r"
+            if [[ -n "$psid_s" ]]; then
+              case "$PID_BY_SID" in *$'\n'"$psid_s"$'\037'*)
+                ppid_s="${PID_BY_SID#*$'\n'"$psid_s"$'\037'}"; ppid_s="${ppid_s%%$'\n'*}" ;;
+              esac
+              # 자기 scratchpad 안에서 도는 세션이면 자기를 부모로 삼게 된다 —
+              # 그러면 gen_all 이 제 자식으로 매달아 행이 통째로 사라진다.
+              [[ "$ppid_s" == "$pid" ]] && ppid_s=""
+            fi
+          fi
+          if [[ -n "$ppid_s" ]]; then
+            case "$ROW_BY_PID" in *$'\n'"$ppid_s"$'\037'*)
+              prow="${ROW_BY_PID#*$'\n'"$ppid_s"$'\037'}"; prow="${prow%%$'\n'*}"
+              pcwd_s="${prow%%$'\037'*}"
+              pname_s="${prow#*$'\037'}" ;;
+            esac
+          fi
+        fi
         # basename 프로세스를 안 띄운다 — 마지막 조각이 비는 건 cwd 가 '/' 일 때뿐.
         dir="${cwd##*/}"; [[ -z "$dir" && -n "$cwd" ]] && dir="/"
+        # headless 자식은 회차 작업공간(…/eval5608/r1)에 앉는 일이 많아 마지막
+        # 조각만으로는 'r1' 밖에 안 남는다 — 두 조각을 쓴다 (hdls_dir_r 참조).
+        [[ -n "$hl" ]] && { hdls_dir_r "$cwd"; dir="$_r"; }
         # --json 은 waitingFor 를 안 주므로 세션 파일에서 폴백 (HITL 상세 사유).
         # 파일을 셸로 먼저 읽어 그 키가 있을 때만 jq 를 부른다 — 이 파일들엔 대개
         # waitingFor 가 없어서(실측: 10개 중 0개) 세션마다 jq 를 헛돌리고 있었다.
@@ -224,17 +370,29 @@ gen() {
           fi
         fi
         case "$status" in
-          busy)    icon="${YELLOW}●${RESET}"; st="busy" ;;
-          waiting) icon="${RED}◐${RESET}";    st="wait" ;;
-          idle)    icon="${GRAY}○${RESET}";   st="idle" ;;
-          stopped) icon="${STOPC}⊘${RESET}";  st="stop" ;;
-          *)       icon="${DIM}·${RESET}";    st="${status:0:4}" ;;
+          busy)     icon="${YELLOW}●${RESET}"; st="busy" ;;
+          waiting)  icon="${RED}◐${RESET}";    st="wait" ;;
+          idle)     icon="${GRAY}○${RESET}";   st="idle" ;;
+          stopped)  icon="${STOPC}⊘${RESET}";  st="stop" ;;
+          # 아이콘 자리를 상태 점이 아니라 '위 행이 낳았다' 는 표시로 쓴다. 어차피
+          # 이 세션엔 busy/idle 을 알려 줄 쪽이 없고, 정렬상 부모 바로 밑에 서므로
+          # 그 자리에서 가장 쓸모 있는 한 글자가 소속이다 (들여쓰기로 하지 않은 건
+          # 뒤의 act/ctx/dir 열이 통째로 밀려서다).
+          headless) icon="${HDLSC}${HDLS_ICON}${RESET}"; st="$HDLS_ST" ;;
+          *)        icon="${DIM}·${RESET}";    st="${status:0:4}" ;;
         esac
         # 세션명 컬럼은 뺐다(디렉터리·프로젝트 구분선과 중복). 이 자리는 워크트리
         # 배지 + 상태 사유(HITL/detached) 전용.
         lab=""
         [[ -n "$waiting" ]] && lab="← $waiting"
-        [[ "$tty" == "-" ]] && lab="${lab:+$lab }(detached)"
+        # headless 행에는 '무엇을 시켰나' 가 온다. tty 가 없는 건 이 세션의 정의라
+        # (detached) 는 안 붙인다 — 터미널을 잃은 대화형 세션에게 하는 말이고,
+        # 여기 붙으면 '되살릴 수 있는 세션' 으로 잘못 읽힌다.
+        if [[ -n "$hl" ]]; then
+          [[ -n "$hprompt" ]] && lab="← $(trunc_disp "$hprompt" "$HDLS_PROMPT_MAX")"
+        elif [[ "$tty" == "-" ]]; then
+          lab="${lab:+$lab }(detached)"
+        fi
         # 정지 세션은 st 컬럼('stop')만으로는 '무엇을 해야 하나' 가 안 나온다 —
         # 살릴 수 없는 잔재라는 것과 정리 수단(k)까지 한 줄에 적는다.
         [[ "$status" == stopped ]] && lab="${lab:+$lab }(정지됨 — k 로 정리)"
@@ -252,7 +410,8 @@ gen() {
         [[ -z "$ecwd" ]] && ecwd=$(cwd_of "$tx")
         [[ -z "$toks" ]] && toks=$(ctx_of "$tx")
         model_pretty_r "$mdl"; pretty="$_r"
-        mode_badge_r "$pm";    badge="$_r"       # permission mode — default 면 빈 값
+        # headless 행은 bypass 배지의 톤을 낮춘다 (mode_badge_r 주석 참조).
+        mode_badge_r "$pm" "$hl"; badge="$_r"     # permission mode — default 면 빈 값
         ctx_cell_n_r "$toks";  ctxc="$_r"        # 목록에는 cpu% 대신 컨텍스트 사용률
         # 프로젝트 그룹과 dir 컬럼은 시작 cwd 로 둔다(세션이 돌아다녀도 자리가
         # 안 튀게). 반면 브랜치·워크트리는 '지금 어디서 일하는지' 가 알고 싶은
@@ -260,6 +419,13 @@ gen() {
         # 앞뒤로 안 맞게 되므로 시작 cwd 로 되돌린다.
         local proj wt wtb egd
         git_root_r "$cwd"; proj="${_r:-$cwd}"
+        # 부모를 찾은 headless 행은 부모의 프로젝트로 귀속시킨다. 제 cwd 로 두면
+        # scratchpad 회차 디렉터리가 'r1' 이라는 이름의 프로젝트로 승격돼, 회차가
+        # 늘 때마다 가짜 그룹이 그 수만큼 생기고 진짜 프로젝트 사이에 끼어든다.
+        # 이 행이 속한 곳은 그 디렉터리가 아니라 자기를 띄운 세션의 저장소다.
+        if [[ -n "$ppid_s" && -n "$pcwd_s" ]]; then
+          git_root_r "$pcwd_s"; proj="${_r:-$pcwd_s}"
+        fi
         case "$ecwd" in "$proj"|"$proj"/*) ;; *) ecwd="$cwd" ;; esac
         # ecwd 의 .git 을 한 번만 찾아 워크트리 이름·배지·2행 브랜치가 나눠 쓴다
         # (예전엔 셋이 각자 상위로 거슬러 올라갔다).
@@ -297,13 +463,17 @@ gen() {
         else
           # 정지 세션은 dir·사유를 한 톤 죽여 살아있는 행들 사이에서 눈에 덜 걸리게
           # 한다 (숨기지는 않는다 — 자식 프로세스를 물고 멈춰 있는 상태라 보여야 한다).
+          # headless 행도 같은 이유로 톤을 낮춘다 — 사람이 볼 화면이 아니라서
+          # 눈이 먼저 갈 자리가 아니지만, 부모가 무엇을 돌리고 있는지는 보여야 한다.
           local dirc="$BLUE" labc="$GRAY"
-          [[ "$status" == stopped ]] && { dirc="$STOPC"; labc="$STOPC"; }
+          [[ "$status" == stopped ]]  && { dirc="$STOPC"; labc="$STOPC"; }
+          [[ "$status" == headless ]] && { dirc="$HDLSC"; labc="$HDLSC"; }
           printf -v col1 '%s %-5s %s%s %s%s%s %s%s%s%s' \
             "$icon" "$st" "$actc" "$ctxc" "$dirc" $'\036'"$dir"$'\035' "$RESET" \
             "${tail1:+$tail1 }" "$labc" "$lab" "$RESET"
         fi
-        meta_line_r "$ecwd" "$pretty" "$badge" "$egd"
+        # 부모 이름은 2행 앞자리로 — 1행은 '무엇을 시켰나' 가 이미 차지했다.
+        meta_line_r "$ecwd" "$pretty" "$badge" "$egd" "$pname_s"
         col1="$col1$VT$_r"
         # 15~19 는 헤더 통계(stats)용 원자료 — 배지 개수와 모델은 col1 에 렌더만 돼
         # 있어 다시 못 뽑으므로 여기서 같이 실어 보낸다. 렌더에는 안 쓴다.
@@ -317,9 +487,13 @@ gen() {
         # stats 는 세션이 아니라 자리(working_dir)를 단위로 다시 센다.
         # 20(포트 목록) 뒤에 붙인 건 그 자리 번호를 건드리면 srv_snap_ports 가
         # 엉뚱한 필드를 읽기 때문이다.
-        printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n' \
+        # 22~23 은 headless 자식의 부모(pid·이름)다. 22 는 gen_all 이 정렬에 쓰고
+        # (자식을 부모 행 바로 밑으로 옮긴다), 둘 다 preview 로도 넘어간다. 부모를
+        # 못 찾았으면 둘 다 비어 있고, 그때 이 행은 제 자리에 그냥 선다.
+        printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n' \
           "$col1" "$pid" "$tty" "$sid" "$cwd" "$started" "$status" "$waiting" "$name" "$cpu" "$rssmb" "$proj" "$wt" "$actw" \
-          "${nag:-0}" "${nsh:-0}" "${nmon:-0}" "$pretty" "${nsrv:-0}" "${sports:-}" "${ecwd:-}"
+          "${nag:-0}" "${nsh:-0}" "${nmon:-0}" "$pretty" "${nsrv:-0}" "${sports:-}" "${ecwd:-}" \
+          "${ppid_s:-}" "${pname_s:-}"
      done <<< "$rows"
 }
 
@@ -360,13 +534,35 @@ gen_all() {
   { gen; gen_cursor; gen_codex; } | awk -F'\037' \
       -v VT="$VT" -v RULE="$GRAY" -v NAME="${BOLD}${BLUE}" \
       -v Z="$RESET" -v AV="$avail" '
+    # emitkids <부모pid> <깊이> : 그 행이 낳은 headless 자식들을 이어서 뽑는다.
+    #   자식이 또 자식을 낳는 경우(하네스가 띄운 세션이 다시 -p 를 부르는 꼴)가
+    #   있어 재귀로 내려간다 — 한 단만 뽑으면 손자 행이 목록에서 통째로 사라진다.
+    #   깊이 상한은 방어용이다. 부모는 프로세스 트리를 거슬러 찾으므로 순환이
+    #   생길 수 없지만, 생기면 여기서 무한 재귀가 되기 때문에 막아 둔다.
+    function emitkids(p, d,   c) {
+      if (d > 8) return
+      for (c = 1; c <= kn[p]; c++) { print kid[p, c]; emitkids(kpid[p, c], d + 1) }
+    }
     NF {
+      # headless 자식(22=부모 pid)은 제 순서 자리에 안 세우고 부모 밑에 매달아 둔다.
+      # 부모가 목록에 있는 것은 보장된다 — gen 이 이번 스냅샷의 세션 pid 집합
+      # 안에서만 부모를 찾기 때문이다(hdls_parent_r). 못 찾으면 22 가 비어 있어
+      # 이 가지를 안 타고, 그 행은 예전처럼 제 자리에 그냥 선다.
+      #
+      # 그룹 등록(seen/ord)보다 먼저 걸러 낸다 — 자식의 12(프로젝트)는 부모를 따라
+      # 이미 덮여 있지만, 부모가 또 headless 인 중첩에서는 할아버지까지 못 따라가
+      # scratchpad 경로가 그대로 남는다. 그걸 등록하면 행이 하나도 안 들어가는 빈
+      # 그룹이 생긴다 (자식은 kid 로 빠지므로).
+      # kpid 를 같이 들고 있는 건 그 자식의 자식을 다시 찾기 위해서다.
+      if ($22 != "") { kid[$22, ++kn[$22]] = $0; kpid[$22, kn[$22]] = $2; next }
       k=$12
       if (!(k in seen)) { seen[k]=++g; ord[g]=k }
       # 살아있는 행(n)과 정지 행(s)을 따로 담아 END 에서 n → s 순으로 뽑는다.
       # 한 배열에 담고 나중에 정렬하지 않는 이유는 awk 배열이 순서를 안 지켜서다.
-      if ($7=="stopped") rows[k,"s" ++scnt[k]]=$0
-      else               rows[k,"n" ++ncnt[k]]=$0
+      # pid 를 함께 들고 있는 건 END 에서 그 행의 자식을 꺼내려면 키가 필요해서다
+      # (레코드를 다시 split 하지 않으려는 절충).
+      if ($7=="stopped") { rows[k,"s" ++scnt[k]]=$0; rpid[k,"s" scnt[k]]=$2 }
+      else               { rows[k,"n" ++ncnt[k]]=$0; rpid[k,"n" ncnt[k]]=$2 }
       # 같은 자리에 보이는 행끼리 pid 를 덧붙이는 판정은 fit_dir 이 한다 — 그 판정에
       # 쓰는 dir 은 잘린 뒤 화면에 보이는 값이라, 폭이 정해진 뒤에야 비교가 된다.
     }
@@ -377,9 +573,17 @@ gen_all() {
         rule=""; for (z=0; z<pad; z++) rule=rule "━"
         hdr=RULE "━━" Z " " NAME name Z " " RULE rule Z VT
         # 구분선은 그룹의 첫 행에 얹는다 — 정지 세션만 있는 그룹이면 그 행이 첫 행이다.
+        # 각 행 뒤에 그 행이 낳은 headless 자식을 곧장 붙인다 — 자식 행의 아이콘(↳)이
+        # 바로 위 줄을 가리키므로, 사이에 다른 세션이 끼면 엉뚱한 행을 가리키게 된다.
         first=1
-        for (m=1; m<=ncnt[k]; m++) { print (first ? hdr : "") rows[k,"n" m]; first=0 }
-        for (m=1; m<=scnt[k]; m++) { print (first ? hdr : "") rows[k,"s" m]; first=0 }
+        for (m=1; m<=ncnt[k]; m++) {
+          print (first ? hdr : "") rows[k,"n" m]; first=0
+          emitkids(rpid[k,"n" m], 1)
+        }
+        for (m=1; m<=scnt[k]; m++) {
+          print (first ? hdr : "") rows[k,"s" m]; first=0
+          emitkids(rpid[k,"s" m], 1)
+        }
       }
     }' | fit_dir
 }
