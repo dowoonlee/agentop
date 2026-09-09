@@ -31,7 +31,7 @@ dir_cell() { printf '\036%s\035' "${1:-}"; }
 #   서버·컨테이너는 띄워 두면 계속 있다. 변동이 적은 것을 끝에 두면 앞자리가
 #   흔들려도 눈이 따라가는 자리가 덜 움직인다. 그중에서도 🐳 가 맨 끝인 건 스택을
 #   한 번 올리면 세션이 끝날 때까지 그대로인 쪽이라서다.
-#   앞의 icon(1)·state(5) 가 고정폭이라 슬롯 시작점이 항상 같은 자리 — 목록을
+#   앞의 icon(1)·agent(AGENT_W) 이 고정폭이라 슬롯 시작점이 항상 같은 자리 — 목록을
 #   세로로 훑으면 '지금 뭔가 돌고 있는 세션' 만 한 열에서 바로 잡힌다.
 #   (dir 뒤에 두던 시절엔 앞의 워크트리 배지가 행마다 길이가 달라 x 좌표가
 #   제각각이었고, 어느 세션에 붙은 배지인지 눈으로 못 따라갔다.)
@@ -301,7 +301,7 @@ gen() {
 
   # 루프 안에서만 쓰는 값들 — 예전엔 파이프 서브셸이 감싸 줘서 함수 밖으로 안
   # 샜는데, 이제 서브셸이 없으므로 여기서 명시적으로 함수 스코프에 가둔다.
-  local tty dir icon st lab col1 psline
+  local tty dir icon lab col1 psline
   while IFS=$'\037' read -r pid status waiting cwd name sid started; do
         [[ -n "$pid" ]] || continue
         # tty + cpu + rss + stat 은 위에서 받아 둔 ps 한 벌에서 제 줄만 집어 온다.
@@ -379,17 +379,19 @@ gen() {
             esac
           fi
         fi
+        # 상태는 아이콘(모양+색)이 전담하고, 그 뒤 컬럼은 에이전트 이름이 가져간다 —
+        # 두 값을 한 자리에 겹쳐 놓으면 busy 일 때 색이 상태에 먹혀 claude/cursor/codex
+        # 가 안 갈렸다 (const.sh 의 AGENT_W 주석 참조). claude 행은 전부 CLAUDE 다.
         case "$status" in
-          busy)     icon="${YELLOW}●${RESET}"; st="busy" ;;
-          waiting)  icon="${RED}◐${RESET}";    st="wait" ;;
-          idle)     icon="${GRAY}○${RESET}";   st="idle" ;;
-          stopped)  icon="${STOPC}⊘${RESET}";  st="stop" ;;
+          busy)     icon="${YELLOW}●${RESET}" ;;
+          waiting)  icon="${RED}◐${RESET}"    ;;
+          idle)     icon="${GRAY}○${RESET}"   ;;
+          stopped)  icon="${STOPC}⊘${RESET}"  ;;
           # 아이콘 자리를 상태 점이 아니라 '위 행이 낳았다' 는 표시로 쓴다. 어차피
           # 이 세션엔 busy/idle 을 알려 줄 쪽이 없고, 정렬상 부모 바로 밑에 서므로
-          # 그 자리에서 가장 쓸모 있는 한 글자가 소속이다. 행 자체도 한 단 들여쓴다
-          # (HDLS_IND) — 뒤의 act/ctx/dir 열이 그만큼 밀리는 값을 치른다.
-          headless) icon="${HDLSC}${HDLS_ICON}${RESET}"; st="$HDLS_ST" ;;
-          *)        icon="${DIM}·${RESET}";    st="${status:0:4}" ;;
+          # 그 자리에서 가장 쓸모 있는 한 글자가 소속이다.
+          headless) icon="${HDLSC}${HDLS_ICON}${RESET}" ;;
+          *)        icon="${DIM}·${RESET}"    ;;
         esac
         # 세션명 컬럼은 뺐다(디렉터리·프로젝트 구분선과 중복). 이 자리는 워크트리
         # 배지 + 상태 사유(HITL/detached) 전용.
@@ -464,31 +466,37 @@ gen() {
         board_badge_r "$sid"; bbadge="$_r"
         tail1="$wtb"
         [[ -n "$bbadge" ]] && tail1="${tail1:+$tail1 }$bbadge"
-        # headless 자식 행은 부모 밑으로 한 단 들여쓴다. 몇 단인지는 여기서 못 정한다 —
-        # 부모 사슬의 깊이는 행을 매다는 gen_all 만 아는 값이다. 그래서 자리만 마커로
-        # 잡아 두고(1행 머리·2행 메타 두 군데) 채우는 건 그쪽에 맡긴다.
+        # headless 자식 행은 부모 밑으로 한 단 들여쓴다. 들여쓰기는 행 머리가 아니라
+        # dir 셀 '안' 에 넣는다 — 행째 밀면 뒤의 act/ctx/dir 열이 부모 행과 어긋나기
+        # 때문이다. dir 은 고정폭이라 안에서 2칸을 내줘도 그 뒤는 제자리에 선다.
+        # 몇 단인지는 여기서 못 정한다 — 부모 사슬의 깊이는 행을 매다는 gen_all 만
+        # 아는 값이다. 그래서 자리만 마커로 잡아 두고 채우는 건 그쪽에 맡긴다.
         local hind=""; [[ -n "$hl" ]] && hind=$'\005'
         if [[ "$status" == waiting ]]; then
-          # HITL 세션 — 행 강조: ◐ WAIT 배지(icon+state 자리) + 굵은 빨강 텍스트.
-          # 배지가 8칸이라 활동 슬롯을 바로 이어 붙이면 뒤 컬럼이 일반 행과 같은 열에 선다.
-          printf -v col1 '%s ◐ WAIT %s%s%s %s%s%s %s%s%s%s' \
-            "$HL" "$RESET" "$actc" "$ctxc" "${BOLD}${RED}" $'\036'"$dir"$'\035' "$RESET" \
+          # HITL 세션 — 행 강조: 빨강 배지(icon+agent 자리) + 굵은 빨강 텍스트.
+          # 배지 폭이 icon(1)+공백(1)+AGENT_W 와 정확히 같아, 강조된 행에서도 뒤
+          # 컬럼이 일반 행과 같은 열에 선다. 'WAIT' 글자는 안 쓴다 — 그 자리는
+          # 에이전트 몫이고, 대기라는 사실은 배지·◐·빨강 사유가 이미 세 번 말한다.
+          printf -v col1 '%s◐ %-*s%s %s%s %s%s%s %s%s%s%s' \
+            "$HL" "$AGENT_W" "$AGENT_CLAUDE" "$RESET" "$actc" "$ctxc" \
+            "${BOLD}${RED}" $'\036'"$dir"$'\035' "$RESET" \
             "${tail1:+$tail1 }" "${BOLD}${RED}" "$lab" "$RESET"
         else
           # 정지 세션은 dir·사유를 한 톤 죽여 살아있는 행들 사이에서 눈에 덜 걸리게
           # 한다 (숨기지는 않는다 — 자식 프로세스를 물고 멈춰 있는 상태라 보여야 한다).
           # headless 행도 같은 이유로 톤을 낮춘다 — 사람이 볼 화면이 아니라서
           # 눈이 먼저 갈 자리가 아니지만, 부모가 무엇을 돌리고 있는지는 보여야 한다.
-          local dirc="$BLUE" labc="$GRAY"
-          [[ "$status" == stopped ]]  && { dirc="$STOPC"; labc="$STOPC"; }
-          [[ "$status" == headless ]] && { dirc="$HDLSC"; labc="$HDLSC"; }
-          printf -v col1 '%s%s %-5s %s%s %s%s%s %s%s%s%s' \
-            "$hind" "$icon" "$st" "$actc" "$ctxc" "$dirc" $'\036'"$dir"$'\035' "$RESET" \
+          local dirc="$BLUE" labc="$GRAY" agc="$AGENT_CLAUDE_C"
+          [[ "$status" == stopped ]]  && { dirc="$STOPC"; labc="$STOPC"; agc="$STOPC"; }
+          [[ "$status" == headless ]] && { dirc="$HDLSC"; labc="$HDLSC"; agc="$HDLSC"; }
+          printf -v col1 '%s %s%-*s%s %s%s %s%s%s %s%s%s%s' \
+            "$icon" "$agc" "$AGENT_W" "$AGENT_CLAUDE" "$RESET" "$actc" "$ctxc" \
+            "$dirc" $'\036'"$hind$dir"$'\035' "$RESET" \
             "${tail1:+$tail1 }" "$labc" "$lab" "$RESET"
         fi
         # 부모 이름은 2행 앞자리로 — 1행은 '무엇을 시켰나' 가 이미 차지했다.
         meta_line_r "$ecwd" "$pretty" "$badge" "$egd" "$pname_s"
-        col1="$col1$VT$hind$_r"
+        col1="$col1$VT$_r"
         # 15~19 는 헤더 통계(stats)용 원자료 — 배지 개수와 모델은 col1 에 렌더만 돼
         # 있어 다시 못 뽑으므로 여기서 같이 실어 보낸다. 렌더에는 안 쓴다.
         # 20(포트 목록)은 preview 몫이다 — 별개 프로세스라 SRV_MAP 을 못 물려받는데,
@@ -559,11 +567,11 @@ gen_all() {
   { gen; [[ -z "$OTHER_AGENT_ROWS" ]] || printf '%s\n' "$OTHER_AGENT_ROWS"; } | awk -F'\037' \
       -v VT="$VT" -v RULE="$GRAY" -v NAME="${BOLD}${BLUE}" \
       -v Z="$RESET" -v AV="$avail" -v IND="$HDLS_IND" -v INDMAX="$HDLS_IND_MAX" '
-    # emit <레코드> <깊이> : gen 이 남긴 들여쓰기 자리(\005)를 그 깊이만큼의 공백으로
-    #   채워 내보낸다. 한 행에 두 군데(1행 머리·2행 메타)라 gsub 이고, headless 가
-    #   아닌 행에는 마커가 없어 그냥 지나간다. 들여쓰는 폭을 gen 이 아니라 여기서
-    #   정하는 건 깊이를 아는 쪽이 여기뿐이어서다 — 자식을 부모 밑에 매다는 것도,
-    #   그 자식의 자식까지 내려가는 것도 이 awk 다.
+    # emit <레코드> <깊이> : gen 이 dir 셀 안에 남긴 들여쓰기 자리(\005)를 그 깊이만큼의
+    #   공백으로 채워 내보낸다. headless 가 아닌 행에는 마커가 없어 그냥 지나간다.
+    #   (gsub 인 건 방어용이다 — 마커가 한 군데뿐이어도 남는 게 없어야 한다.)
+    #   들여쓰는 폭을 gen 이 아니라 여기서 정하는 건 깊이를 아는 쪽이 여기뿐이어서다
+    #   — 자식을 부모 밑에 매다는 것도, 그 자식의 자식까지 내려가는 것도 이 awk 다.
     #   부모를 못 찾아 제 자리에 서는 headless 행은 깊이 0 이다. 가리킬 위 줄이
     #   없는데 들여쓰면 없는 소속을 지어내는 셈이 된다.
     function emit(r, d,   n, s) {

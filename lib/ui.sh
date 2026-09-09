@@ -361,8 +361,8 @@ build_header() {
   out+="${out:+$nl}$line"
 
   # 컬럼 이름 — gen 의 행 포맷과 자릿수를 그대로 맞춘다.
-  #   1행 icon(1) st(5) act(act_width + 구분1) ctx(3+%) dir(2단은 DIR_W 고정,
-  #   목록만은 dir_width) → 그 뒤는 워크트리 배지·상태 사유 자리
+  #   1행 icon(1) agent(AGENT_W) act(act_width + 구분1) ctx(3+%) dir(2단은 DIR_W
+  #   고정, 목록만은 dir_width) → 그 뒤는 워크트리 배지·상태 사유 자리
   #   2행 META_IND + '└ ' + 브랜치 · 모델 · 권한모드
   # fzf 는 헤더도 포인터 폭(2칸)만큼 들여쓰므로 별도 패딩 없이 그대로 정렬된다.
   local c1 c2 dw="$DIR_W" aw ac=''
@@ -375,7 +375,7 @@ build_header() {
   if   (( aw >= 3 )); then ac=$(printf '%-*s ' "$aw" 'act')
   elif (( aw >  0 )); then ac=$(printf '%*s ' "$aw" '')
   fi
-  c1=$(printf '%s %-5s %s%4s %-*s %s' ' ' 'state' "$ac" 'ctx' "$dw" 'dir' 'worktree')
+  c1=$(printf '%s %-*s %s%4s %-*s %s' ' ' "$AGENT_W" 'agent' "$ac" 'ctx' "$dw" 'dir' 'worktree')
   c2=$(printf '%s└ ⎇ branch · model · mode' "$META_IND")
   out+="$nl${GRAY}${c1}${RESET}$nl${DIM}${c2}${RESET}"
 

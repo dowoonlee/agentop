@@ -52,6 +52,7 @@ rows = [line.split("\x1f") for line in sys.stdin.read().split("\n") if line]
 by_pid = {r[1]: r for r in rows}
 assert len(rows) == 6, "A session disappeared or was duplicated"
 order = [r[1] for r in rows]
+child_dir = {"910001": "eval-a/r1", "910002": "eval-b/r1", "910003": "nested/r1"}
 for child, parent, depth, label in [
     ("910001", "910100", 1, "codex"),
     ("910002", "910200", 1, "cursor"),
@@ -61,11 +62,16 @@ for child, parent, depth, label in [
     assert r[21] == parent, (child, r[21])
     assert order.index(child) == order.index(parent) + 1, order
     display = re.sub(r"\x1b\[[0-9;]*m", "", r[0])
-    assert display.startswith(" " * (2 * depth) + "↳"), repr(display)
+    # 들여쓰기는 행 머리가 아니라 dir 셀 안에서 먹는다 — 그래야 act/ctx/dir 열이
+    # 부모 행과 같은 자리에 선다. 행 머리는 어느 행이든 icon + agent 로 시작한다.
+    assert display.startswith("↳ CLAUDE "), repr(display)
+    head, _, meta = display.partition("\x0b")
+    assert " " * (2 * depth) + child_dir[child] in head, repr(head)
+    assert not meta.startswith(" " * (2 * depth) + "    └"), repr(meta)
     if label:
         assert r[11] == "/fixture/project", r[11]
         assert r[22] == label, r[22]
-        assert "↳ " + label in display, display
+        assert "↳ " + label in meta, meta
 orphan = by_pid["910004"]
 assert not orphan[21], orphan[21]
 assert orphan[11] == "/fixture/orphan/r1"

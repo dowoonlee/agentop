@@ -117,7 +117,7 @@ gen_cursor() {
 
   local screens; screens=$(cursor_screens "${ttys[@]}")
 
-  local i dir lab col1 status waiting scrtail icon st proj wtb ctxc
+  local i dir lab col1 status waiting scrtail icon proj wtb ctxc
   local actc actw sports nsrv ecwd
   ctxc=$(ctx_cell "")   # claude transcript 가 없어 컨텍스트 사용률은 미상('-')
   for i in "${!pids[@]}"; do
@@ -138,18 +138,22 @@ gen_cursor() {
     lab=""
     [[ -n "$waiting" ]] && lab="← $waiting"
     if [[ "$status" == waiting ]]; then
-      # HITL — claude 의 ◐ WAIT 행과 같은 강조, ◆ 로 cursor 임만 구분
-      col1=$(printf '%s ◆ WAIT %s%s%s %s%s%s %s%s%s%s' \
-        "$HL" "$RESET" "$actc" "$ctxc" "${BOLD}${RED}" "$(dir_cell "$dir")" "$RESET" \
+      # HITL — claude 의 대기 행과 같은 강조, ◆ 로 cursor 임만 구분. 배지 폭은
+      # icon(1)+공백(1)+AGENT_W — 일반 행의 앞 블록과 같아 뒤 컬럼이 안 밀린다.
+      col1=$(printf '%s◆ %-*s%s %s%s %s%s%s %s%s%s%s' \
+        "$HL" "$AGENT_W" "$AGENT_CURSOR" "$RESET" "$actc" "$ctxc" \
+        "${BOLD}${RED}" "$(dir_cell "$dir")" "$RESET" \
         "${wtb:+$wtb }" "${BOLD}${RED}" "$lab" "$RESET")
     else
+      # 모양(◆)이 cursor 임을, 색이 상태를 말한다 — 이름은 뒤 agent 컬럼이 적으므로
+      # 여기서 상태 단어를 또 쓰지 않는다 (gen.sh 의 claude 행과 같은 규칙).
       case "$status" in
-        busy) icon="${YELLOW}◆${RESET}"; st="busy" ;;
-        idle) icon="${CYAN}◆${RESET}";   st="idle" ;;
-        *)    icon="${CYAN}◆${RESET}";   st="cur" ;;
+        busy) icon="${YELLOW}◆${RESET}" ;;
+        *)    icon="${CYAN}◆${RESET}"   ;;
       esac
-      col1=$(printf '%s %-5s %s%s %s%s%s %s%s%s%s' \
-        "$icon" "$st" "$actc" "$ctxc" "$BLUE" "$(dir_cell "$dir")" "$RESET" \
+      col1=$(printf '%s %s%-*s%s %s%s %s%s%s %s%s%s%s' \
+        "$icon" "$AGENT_CURSOR_C" "$AGENT_W" "$AGENT_CURSOR" "$RESET" "$actc" "$ctxc" \
+        "$BLUE" "$(dir_cell "$dir")" "$RESET" \
         "${wtb:+$wtb }" "$GRAY" "$lab" "$RESET")
     fi
     col1="$col1$VT$(meta_line "$cwd")"   # cursor 는 모델/모드가 없어 브랜치만
@@ -326,7 +330,7 @@ gen_codex() {
     done
   done < <(codex_subagent_parents "$pidset")
 
-  local dir lab col1 status waiting scrtail icon st proj wtb ctxc model ctoks ccap
+  local dir lab col1 status waiting scrtail icon proj wtb ctxc model ctoks ccap
   local nag actc actw sports nsrv ecwd
   for i in "${!pids[@]}"; do
     pid="${pids[$i]}"; tty="${ttys[$i]}"; cwd="${cwds[$i]}"
@@ -352,18 +356,21 @@ gen_codex() {
     lab=""
     [[ -n "$waiting" ]] && lab="← $waiting"
     if [[ "$status" == waiting ]]; then
-      # HITL — claude 의 ◐ WAIT 행과 같은 강조, ◈ 로 codex 임만 구분
-      col1=$(printf '%s ◈ WAIT %s%s%s %s%s%s %s%s%s%s' \
-        "$HL" "$RESET" "$actc" "$ctxc" "${BOLD}${RED}" "$(dir_cell "$dir")" "$RESET" \
+      # HITL — claude 의 대기 행과 같은 강조, ◈ 로 codex 임만 구분. 배지 폭은
+      # icon(1)+공백(1)+AGENT_W — 일반 행의 앞 블록과 같아 뒤 컬럼이 안 밀린다.
+      col1=$(printf '%s◈ %-*s%s %s%s %s%s%s %s%s%s%s' \
+        "$HL" "$AGENT_W" "$AGENT_CODEX" "$RESET" "$actc" "$ctxc" \
+        "${BOLD}${RED}" "$(dir_cell "$dir")" "$RESET" \
         "${wtb:+$wtb }" "${BOLD}${RED}" "$lab" "$RESET")
     else
+      # 모양(◈)이 codex 임을, 색이 상태를 말한다 — cursor 행과 같은 규칙이다.
       case "$status" in
-        busy) icon="${YELLOW}◈${RESET}";  st="busy" ;;
-        idle) icon="${MAGENTA}◈${RESET}"; st="idle" ;;
-        *)    icon="${MAGENTA}◈${RESET}"; st="cdx" ;;
+        busy) icon="${YELLOW}◈${RESET}"  ;;
+        *)    icon="${MAGENTA}◈${RESET}" ;;
       esac
-      col1=$(printf '%s %-5s %s%s %s%s%s %s%s%s%s' \
-        "$icon" "$st" "$actc" "$ctxc" "$BLUE" "$(dir_cell "$dir")" "$RESET" \
+      col1=$(printf '%s %s%-*s%s %s%s %s%s%s %s%s%s%s' \
+        "$icon" "$AGENT_CODEX_C" "$AGENT_W" "$AGENT_CODEX" "$RESET" "$actc" "$ctxc" \
+        "$BLUE" "$(dir_cell "$dir")" "$RESET" \
         "${wtb:+$wtb }" "$MAGENTA" "$lab" "$RESET")
     fi
     # PID가 열고 있는 세션 기록의 최신 모델과 토큰 사용량을 표시한다.
