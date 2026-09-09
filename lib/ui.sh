@@ -293,6 +293,24 @@ dispwidth() {
 #   행과 같은 자리에 선다. 폭을 파일로 주고받지 않고 스냅샷에서 바로 계산하는
 #   이유: 종료 직후 뒤늦게 끝난 --gen 이 그 파일을 되살려 남기는 일이 없게.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# model_width : 현재 스냅샷의 '가장 긴 모델 이름' 표시 폭 (최소 MODEL_W).
+#   2행 모델 컬럼은 fit_dir 이 이 기준으로 맞추므로, 헤더의 컬럼 이름도 같은 값을
+#   알아야 행과 같은 자리에 선다 (dir_width 와 같은 역할·같은 이유).
+#   근거는 레코드 18(모델) 이다 — 2행에 렌더된 값과 같은 원자료라 어긋나지 않는다.
+# ---------------------------------------------------------------------------
+model_width() {
+  local f="${CC_TOP_LST:-}"
+  [[ -s "$f" ]] || { printf '%s' "$MODEL_W"; return 0; }
+  MODEL_W="$MODEL_W" cut -d$'\037' -f18 "$f" 2>/dev/null | perl -CSA -ne '
+    chomp;
+    my $w = 0;
+    $w += ($_ =~ /\p{Ea=W}|\p{Ea=F}/) ? 2 : 1 for split //, $_;
+    $m = $w if $w > $m;
+    END { $m = $ENV{MODEL_W} if $m < $ENV{MODEL_W}; print $m+0 }
+  ' 2>/dev/null
+}
+
 dir_width() {
   local f="${CC_TOP_LST:-}"
   [[ -s "$f" ]] || { printf '%s' "$DIR_W"; return 0; }
@@ -363,7 +381,7 @@ build_header() {
   # 컬럼 이름 — gen 의 행 포맷과 자릿수를 그대로 맞춘다.
   #   1행 icon(1) agent(AGENT_W) act(act_width + 구분1) ctx(3+%) dir(2단은 DIR_W
   #   고정, 목록만은 dir_width) → 그 뒤는 워크트리 배지·상태 사유 자리
-  #   2행 META_IND + '└ ' + 브랜치 · 모델 · 권한모드
+  #   2행 META_IND + '└ ' + 모델(model_width) + ⎇브랜치 · 부모 · 권한모드
   # fzf 는 헤더도 포인터 폭(2칸)만큼 들여쓰므로 별도 패딩 없이 그대로 정렬된다.
   local c1 c2 dw="$DIR_W" aw ac=''
   if ! preview_shown; then
@@ -376,7 +394,9 @@ build_header() {
   elif (( aw >  0 )); then ac=$(printf '%*s ' "$aw" '')
   fi
   c1=$(printf '%s %-*s %s%4s %-*s %s' ' ' "$AGENT_W" 'agent' "$ac" 'ctx' "$dw" 'dir' 'worktree')
-  c2=$(printf '%s└ ⎇ branch · model · mode' "$META_IND")
+  local mw; mw=$(model_width)
+  [[ "$mw" =~ ^[0-9]+$ ]] || mw="$MODEL_W"
+  c2=$(printf '%s└ %-*s %s' "$META_IND" "$mw" 'model' '⎇ branch · mode')
   out+="$nl${GRAY}${c1}${RESET}$nl${DIM}${c2}${RESET}"
 
   printf '%s' "$out"

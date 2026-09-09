@@ -61,40 +61,46 @@ act_cell() { act_cell_r "${1:-}" "${2:-0}" "${3:-0}" "${4:-0}" "${5:-0}"; printf
 
 # ---------------------------------------------------------------------------
 # meta_line <cwd> [model_pretty] [mode_badge] [git_dir] [부모라벨] : 행의 2번째 줄.
-#   '⎇ 브랜치 · 모델 · 권한모드' 를 ' · ' 로 이어 붙인다. 모델은 1행 배지처럼
-#   축약(op5)하지 않고 full name(opus5/sonnet4.5/…) 그대로 — 2행을 쓰는 이유.
-#   cursor/codex 세션은 모델/모드가 없어 브랜치만 나온다. git 저장소가 아니면
-#   세그먼트를 빼지 않고 'no-git' 을 흐리게 박는다 — 자리가 비면 '브랜치를 못
-#   읽은 건지 저장소가 아닌 건지' 헷갈리므로 항상 명시한다.
+#   '모델  ⎇브랜치 · 부모 · 권한모드' 순이다. 모델이 맨 앞인 건 그 자리가 2행에서
+#   유일하게 폭을 고정할 수 있는 값이어서다 — 브랜치를 앞에 두면 길이가 행마다
+#   달라 모델이 매번 다른 칸에서 시작하고, 목록을 세로로 훑으며 '무슨 모델로
+#   돌고 있나' 를 잡을 수가 없다. 모델 셀은 마커로 감싸 두고 실제 폭은 fit_dir 이
+#   맞춘다(dir·활동 슬롯과 같은 방식) — 그래서 브랜치도 모든 행에서 같은 자리다.
+#   모델은 1행 배지처럼 축약(op5)하지 않고 full name(opus5/sonnet4.5/…) 그대로다.
+#   cursor 세션은 모델이 없어 셀이 비지만 자리는 그대로 잡아 열이 안 무너진다.
 #
-#   부모라벨이 있으면(headless 자식 행) 브랜치 앞자리를 그것이 가져간다. 이 행에서
-#   가장 알고 싶은 값이 '누가 낳았나' 인데다, 자식은 대개 scratchpad 에 앉아 브랜치
-#   자리가 'no-git' 으로 비어 있어서다. 저장소 안에서 도는 자식이면 브랜치도 뒤에
-#   함께 남는다 — 둘 다 뜻이 있는 값이라 어느 쪽도 지우지 않는다.
+#   git 저장소가 아니면 세그먼트를 빼지 않고 'no-git' 을 흐리게 박는다 — 자리가
+#   비면 '브랜치를 못 읽은 건지 저장소가 아닌 건지' 헷갈리므로 항상 명시한다.
+#
+#   부모라벨이 있으면(headless 자식 행) 브랜치 뒤에 붙는다. 자식은 대개 scratchpad
+#   에 앉아 브랜치 자리가 비므로 사실상 그 자리를 이어받는다 — 그때 'no-git' 은
+#   빼고 부모만 남긴다. scratchpad 자식에게 저장소가 없는 건 알려 줄 사실이 아니라
+#   당연한 것이고, 자리만 먹으면서 고아처럼 읽힌다. 저장소 안에서 도는 자식이면
+#   브랜치와 부모가 나란히 남는다 — 둘 다 뜻이 있는 값이라 어느 쪽도 지우지 않는다.
 # ---------------------------------------------------------------------------
 meta_line_r() {   # <cwd> [모델] [모드배지] [이미 구해 둔 git_dir] [부모라벨]
-  local cwd="${1:-}" pretty="${2:-}" badge="${3:-}" gd="${4:-}" par="${5:-}" br out="" sep mc
+  local cwd="${1:-}" pretty="${2:-}" badge="${3:-}" gd="${4:-}" par="${5:-}" br out="" sep mc mcell
   sep="${DIM} · ${RESET}"
-  [[ -n "$par" ]] && out="${HDLSC}↳ ${par}${RESET}"
-  git_branch_r "$cwd" "$gd"; br="$_r"
-  if [[ -n "$par" && -z "$br" ]]; then
-    # 부모를 이미 적었으면 'no-git' 은 뺀다 — scratchpad 자식에게 저장소가 없는 건
-    # 알려 줄 사실이 아니라 당연한 것이고, 자리만 먹으면서 고아처럼 읽힌다.
-    :
-  elif [[ -n "$br" ]]; then
-    # 긴 브랜치명이 뒤의 모델/모드를 밀어내지 않게 잘라 표시 (전체 값은 preview 에).
-    # 목록만(wide) 모드는 자리가 넉넉하므로 원문 그대로.
-    if (( ! WIDE )) && (( ${#br} > META_BR_MAX )); then br="${br:0:$((META_BR_MAX-1))}…"; fi
-    out+="${out:+$sep}${GREENB}⎇ ${br}${RESET}"
-  else
-    out+="${out:+$sep}${DIM}⎇ no-git${RESET}"
-  fi
+  # 모델 셀 — 색은 마커 바깥에 둔다. 마커 안이 순수 텍스트여야 fit_dir 이 표시폭을
+  # 다시 셀 수 있다(ANSI 가 섞이면 폭 계산이 어긋난다 — dir_cell 과 같은 규칙).
   if [[ -n "$pretty" ]]; then
     model_color_r "$pretty"; mc="$_r"
-    out+="${out:+$sep}${mc}${pretty}${RESET}"
+    mcell="${mc}${MDL_L}${pretty}${MDL_R}${RESET}"
+  else
+    mcell="${MDL_L}${MDL_R}"
   fi
+  git_branch_r "$cwd" "$gd"; br="$_r"
+  if [[ -n "$br" ]]; then
+    # 긴 브랜치명이 뒤의 모드 배지를 밀어내지 않게 잘라 표시 (전체 값은 preview 에).
+    # 목록만(wide) 모드는 자리가 넉넉하므로 원문 그대로.
+    if (( ! WIDE )) && (( ${#br} > META_BR_MAX )); then br="${br:0:$((META_BR_MAX-1))}…"; fi
+    out="${GREENB}⎇ ${br}${RESET}"
+  elif [[ -z "$par" ]]; then
+    out="${DIM}⎇ no-git${RESET}"
+  fi
+  [[ -n "$par" ]] && out+="${out:+$sep}${HDLSC}↳ ${par}${RESET}"
   [[ -n "$badge" ]] && out+="${out:+$sep}${badge}"
-  _r="${META_IND}${DIM}└${RESET} ${out}"
+  _r="${META_IND}${DIM}└${RESET} ${mcell} ${out}"
 }
 meta_line() { meta_line_r "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}"; printf '%s' "$_r"; }
 
@@ -648,9 +654,12 @@ gen_all() {
 #   폭은 그 순간 가장 넓은 행 기준이되 ACT_W 아래로는 안 줄어든다 — 배지 1개짜리
 #   (대부분)에서 폭이 고정돼 배지가 붙었다 떨어질 때마다 뒤 컬럼이 흔들리지 않는다.
 #   슬롯 폭은 행마다 다시 세지 않고 마지막 필드(14)에 실려 온 값을 쓴다.
+#
+#   2행 모델 셀(ACK…SYN)도 같다 — MODEL_W 아래로는 안 줄고, 그 위로는 가장 긴
+#   모델에 맞춘다. 이게 맞아야 그 뒤의 브랜치가 모든 행에서 같은 자리에 선다.
 # ---------------------------------------------------------------------------
 fit_dir() {
-  WIDE="${WIDE:-0}" DIR_W="$DIR_W" ACT_W="$ACT_W" \
+  WIDE="${WIDE:-0}" DIR_W="$DIR_W" ACT_W="$ACT_W" MODEL_W="$MODEL_W" \
   PIDC="$GRAY" Z="$RESET" perl -CSA -e '
     no warnings;   # 깨진 UTF-8 이 섞인 경로에서 경고가 fzf 화면으로 새는 것 방지
     my ($wide, $dw0) = ($ENV{WIDE}, $ENV{DIR_W});
@@ -665,15 +674,20 @@ fit_dir() {
       }
       $d . (" " x ($w - dw($d)));
     }
-    my (@rows, @dir, @aw);
+    my (@rows, @dir, @aw, @mdl);
     my $max = $dw0;
     my $amax = $ENV{ACT_W} + 0;
+    my $mmax = $ENV{MODEL_W} + 0;
     while (my $l = <STDIN>) {
       chomp $l;
       push @rows, $l;
       my $d = ($l =~ /\x1e([^\x1d]*)\x1d/) ? $1 : undef;
       push @dir, $d;
       $max = dw($d) if defined $d && dw($d) > $max;
+      # 2행 모델 셀 — 마커 안은 순수 텍스트라 여기서 바로 표시폭을 센다.
+      my $m = ($l =~ /\x06([^\x16]*)\x16/) ? $1 : undef;
+      push @mdl, $m;
+      $mmax = dw($m) if defined $m && dw($m) > $mmax;
       # 활동 배지 폭은 14번째 필드 (act_cell 이 세어 둔 값). 뒤에 집계용 필드가
       # 더 붙어 있어 맨 뒤에서 잡으면 안 된다. (이 perl 은 bash 작은따옴표 안이라
       # 주석에도 작은따옴표를 쓰면 스크립트가 거기서 끊긴다.)
@@ -700,6 +714,8 @@ fit_dir() {
       } else {
         $l =~ s/\x01[^\x02]*\x02//;
       }
+      # 2행 모델 셀 — 뒤 구분 1칸은 meta_line 이 이미 넣어 뒀다.
+      $l =~ s/\x06([^\x16]*)\x16/$1 . (" " x ($mmax - dw($1)))/e;
       if (defined $cell[$i]) {
         my @f = split /\x1f/, $l, -1;
         my $key = join "\x1f", $f[11] // "", $cell[$i], $f[12] // "";

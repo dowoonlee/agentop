@@ -128,7 +128,7 @@ DIRS = {"960001": "app", "960002": "web", "960003": "api", "960004": "dbx",
 rows = [l.split("\x1f") for l in sys.stdin.read().split("\n") if l]
 assert len(rows) == 9, "행 수가 %d 다 (9 를 기대)" % len(rows)
 
-seen, dirstart = set(), set()
+seen, dirstart, brstart, models = set(), set(), set(), set()
 for r in rows:
     plain = re.sub(r"\x1b\[[0-9;]*m", "", r[0])
     parts = plain.split("\x0b")
@@ -149,10 +149,21 @@ for r in rows:
     indent = 2 if head[0] == "↳" else 0
     dirstart.add(dw(head[:at]) - indent)
 
-    # 3) 2행 메타도 모든 행이 같은 자리에서 시작한다.
+    # 3) 2행 메타 — 들여쓰기가 같고, 모델 컬럼이 고정폭이라 그 뒤 브랜치도
+    #    모든 행에서 같은 자리에 선다. 모델을 브랜치보다 앞에 둔 이유가 이것이다.
     assert meta.startswith("    └ "), "2행 들여쓰기가 다르다: %r" % meta
+    b = meta.find("\u2387")          # ⎇ — 브랜치 세그먼트 시작
+    assert b > 0, "2행에 브랜치가 없다: %r" % meta
+    brstart.add(dw(meta[:b]))
+    mdl = meta[6:b]                  # 머리 6칸(들여쓰기+└+공백) 뒤 ~ 브랜치 앞 = 모델 셀
+    assert not mdl.startswith(" ") or mdl.isspace(), "모델이 셀 안에서 밀렸다: %r" % meta
+    models.add(mdl.strip())
 
 assert seen == set(AGENTS), "에이전트 세 종류가 다 안 나왔다: %s" % seen
 assert len(dirstart) == 1, "dir 열이 행마다 다른 자리에서 시작한다: %s" % sorted(dirstart)
-print("Column alignment checks passed (dir @ col %d)" % dirstart.pop())
+assert len(brstart) == 1, "2행 브랜치가 행마다 다른 자리에서 시작한다: %s" % sorted(brstart)
+# 길이가 제각각인 모델들이 실제로 섞여 있어야 패딩을 시험한 것이 된다.
+assert len({len(m) for m in models}) > 1, "모델 이름 길이가 다 같아 패딩을 못 봤다: %s" % models
+print("Column alignment checks passed (dir @ col %d, branch @ col %d)"
+      % (dirstart.pop(), brstart.pop()))
 '
