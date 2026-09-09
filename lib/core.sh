@@ -217,6 +217,18 @@ ctx_cell_n_r() {  # <토큰 수> → 목록 1행의 4칸 셀
 }
 ctx_cell_n() { ctx_cell_n_r "${1:-}"; printf '%s' "$_r"; }
 
+# Codex 세션 기록은 모델별 context window를 함께 알려 준다. Claude의 전역
+# CTX_MAX와 섞지 않도록, 그 값을 직접 받은 행만 이 경로를 쓴다.
+ctx_cell_cap_r() {  # <최근 요청의 전체 토큰> <context window>
+  local toks="${1:-}" cap="${2:-}" p c
+  [[ "$toks" =~ ^[0-9]+$ && "$cap" =~ ^[0-9]+$ && "$cap" -gt 0 ]] || {
+    _r="${DIM}   -${RESET}"; return 0; }
+  p=$(( toks * 100 / cap )); (( p > 100 )) && p=100
+  c="$GRAY"; (( p >= 75 )) && c="$YELLOW"; (( p >= 90 )) && c="$RED"
+  printf -v _r '%s%3d%%%s' "$c" "$p" "$RESET"
+}
+ctx_cell_cap() { ctx_cell_cap_r "${1:-}" "${2:-}"; printf '%s' "$_r"; }
+
 ctx_cell() { ctx_cell_n "$(ctx_of "${1:-}")"; }
 
 model_color_r() {
@@ -225,6 +237,17 @@ model_color_r() {
     sonnet*) _r="$M_SONNET" ;;
     haiku*)  _r="$M_HAIKU"  ;;
     fable*)  _r="$M_FABLE"  ;;
+    gpt-*-astra*) _r=$'\e[38;5;141m' ;; # 보라
+    gpt-*-sol*)   _r=$'\e[38;5;221m' ;; # 금색
+    gpt-*-terra*) _r=$'\e[38;5;114m' ;; # 초록
+    gpt-*-luna*)  _r=$'\e[38;5;117m' ;; # 하늘색
+    gpt-5.5*)     _r=$'\e[38;5;210m' ;; # 코랄
+    gpt-5.4*)     _r=$'\e[38;5;179m' ;; # 황토색
+    gpt-5.3*)     _r=$'\e[38;5;80m'  ;; # 청록
+    gpt-5.2*)     _r=$'\e[38;5;147m' ;; # 연보라
+    gpt-5.1*)     _r=$'\e[38;5;216m' ;; # 살구색
+    gpt-*)        _r=$'\e[38;5;75m'  ;; # 나머지 GPT: 파랑
+    o[0-9]*)      _r=$'\e[38;5;175m' ;; # o 계열: 자주색
     *)       _r="$GRAY"     ;;
   esac
 }

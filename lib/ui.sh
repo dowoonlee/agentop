@@ -207,13 +207,19 @@ stats() {
       # 통째로 사라진다. 둘을 더하면 compose 로 뜬 실행 중 컨테이너 전부가 된다.
       #
       # 자리를 고르는 규칙은 dkr_count(목록 배지)·srv_docker(상세)와 같아야 한다 —
-      # 세션의 실효 cwd 에서 위로 거슬러 올라가 만나는 첫 자리 하나. 세 곳이
-      # 어긋나면 행에는 붙어 있는데 통계에선 주인 없다는 모순이 화면에 뜬다.
+      # 세션의 실효 cwd 에서 위로 거슬러 올라가 만나는 첫 자리 하나이되, 조상마다
+      # 그 밑 .claude 한 칸을 먼저 본다 (-f .claude/compose.yml 로 띄우면 라벨이
+      # 세션보다 한 칸 아래에 박힌다 — dkr_count_r 주석 참조). 세 곳이 어긋나면
+      # 행에는 붙어 있는데 통계에선 주인 없다는 모순이 화면에 뜬다.
       # (이 awk 도 bash 작은따옴표 안이라 주석에 작은따옴표를 쓰면 거기서 끊긴다.)
       for (sd in sess) {
-        bst = ""
-        for (cd in dkrdir)
-          if ((sd == cd || index(sd, cd "/") == 1) && length(cd) > length(bst)) bst = cd
+        bst = ""; bstr = -1
+        for (cd in dkrdir) {
+          cb = cd; sub(/\/\.claude$/, "", cb)
+          if (sd != cb && index(sd, cb "/") != 1) continue
+          rr = length(cb) * 2 + (cb == cd ? 0 : 1)   # 가까운 조상 우선, 동률이면 .claude
+          if (rr > bstr) { bstr = rr; bst = cd }
+        }
         if (bst != "") own[bst] = 1
       }
       for (cd in dkrdir) { if (cd in own) dkr += dkrdir[cd]; else orph += dkrdir[cd] }

@@ -240,12 +240,15 @@ gen() {
   # 2초 폴링에서 세션 수만큼 프로세스가 늘어난다 (board_badge 는 이 문자열만 본다).
   local BOARD_MAP; BOARD_MAP=$(board_map)
   # 로컬 서버 — 리스닝 포트 맵도 같은 이유로 루프 전 1회 (lsof+ps 각 1번, ~0.15초).
-  local SRV_MAP; SRV_MAP=$(srv_map)
-  # compose 컨테이너 — 여기서는 캐시만 읽는다. docker ps 는 데몬 상태에 따라 몇
-  # 초까지 늘어져 2초 폴링을 통째로 미룰 수 있어, 갱신은 백그라운드로만 건다
-  # (dkr_warm). 그래서 이번 목록에 반영되는 건 직전에 받아 둔 한 벌이다.
-  dkr_warm
-  local DKR_MAP; DKR_MAP=$(dkr_map)
+  # compose 컨테이너 맵은 캐시만 읽는다. docker ps 는 데몬 상태에 따라 몇 초까지
+  # 늘어져 2초 폴링을 통째로 미룰 수 있어, 갱신은 백그라운드로만 건다(dkr_warm).
+  # 그래서 이번 목록에 반영되는 건 직전에 받아 둔 한 벌이다.
+  #
+  # 둘 다 gen_all 이 이미 채워 뒀으면 그대로 쓴다 — cursor/codex 생성기도 같은 맵을
+  # 봐야 하는데(그쪽 행에도 🌐🐳 가 붙는다), 각자 만들면 lsof+ps 가 두 번 돌아
+  # 폴링에 그대로 얹힌다. 없을 때만 여기서 만든다 (srv_block 과 같은 관용구).
+  [[ -n "${SRV_MAP:-}" ]] || SRV_MAP=$(srv_map)
+  if [[ -z "${DKR_MAP+x}" ]]; then dkr_warm; DKR_MAP=$(dkr_map); fi
   # 필드 구분자는 US(0x1f). 탭은 bash read 에서 빈 필드가 병합되어 못 씀.
   # 세션 목록을 파이프로 바로 while 에 물리지 않고 한 번 받아 둔다 — 파이프로
   # 흘리면 pid 를 미리 모을 수 없어 ps 를 세션마다 따로 불러야 한다(아래 PS_MAP).
@@ -283,6 +286,13 @@ gen() {
     ROW_BY_PID+=$'\n'"$p"$'\037'"$pcwd"$'\037'"$pname0"
     [[ -n "$psid0" ]] && PID_BY_SID+=$'\n'"$psid0"$'\037'"$p"
   done <<< "$rows"
+  # 다른 도구가 claude -p 를 실행할 수도 있다. gen_all 이 실제 출력할 행만
+  # 후보에 넣어, 목록에 없는 프로세스 밑으로 자식 행이 사라지지 않게 한다.
+  while IFS=$'\037' read -r _ p _ _ pcwd _ _ _ pname0 _; do
+    [[ -n "$p" ]] || continue
+    PID_SET+="$p "
+    ROW_BY_PID+=$'\n'"$p"$'\037'"$pcwd"$'\037'"${pname0:-${pcwd##*/}}"
+  done <<< "${OTHER_AGENT_ROWS:-}"
   ROW_BY_PID+=$'\n'; PID_BY_SID+=$'\n'
   [[ -n "$plist" ]] && PS_MAP=$'\n'$(ps -o pid=,tty=,%cpu=,rss=,stat=,args= -p "$plist" 2>/dev/null \
     | LC_ALL=C awk '{ $1=$1; print }')$'\n'
@@ -525,6 +535,14 @@ gen() {
 # ---------------------------------------------------------------------------
 gen_all() {
   local cols avail
+  local OTHER_AGENT_ROWS PPID_MAP=""
+  # 활동 맵은 세 생성기(gen / gen_cursor / gen_codex)가 한 벌을 나눠 본다. 여기서
+  # 미리 채워 두는 건 cursor/codex 가 gen 보다 먼저 돌기 때문이다 — 각자 만들면
+  # lsof+ps 와 docker 캐시 읽기가 생성기 수만큼 늘어난다.
+  local SRV_MAP DKR_MAP
+  SRV_MAP=$(srv_map)
+  dkr_warm
+  DKR_MAP=$(dkr_map)
   # 목록만(wide) 모드 판정 — 생성기·배지 헬퍼가 WIDE 를 보고 생략 규칙을 끈다.
   WIDE=0; preview_shown || WIDE=1
   # 폭은 파일이 우선 — resize 바인딩이 여기에 새 폭을 써 준다. env(CC_TOP_COLS)는
@@ -533,9 +551,12 @@ gen_all() {
   [[ "$cols" =~ ^[0-9]+$ ]] || cols="${CC_TOP_COLS:-80}"
   avail=$(( $(main_width "$cols") - 4 ))   # 메인 영역(패널 유무에 따라 ~48% 또는 전체) 에서 포인터 폭·여백 제외
   (( avail < 20 )) && avail=20
+  # 부모 후보와 출력 행을 같은 스냅샷으로 유지한다. Claude 행을 만들기 전에
+  # Codex/Cursor 부모를 알아야 headless 자식의 귀속·메타·들여쓰기가 맞는다.
+  OTHER_AGENT_ROWS=$({ gen_cursor; gen_codex; })
   # 구분선은 목록에서 바로 눈에 띄어야 하므로 DIM 이 아니라 GRAY + 굵은 괘선(━),
   # 프로젝트명은 볼드로 뽑는다 (2행의 흐린 메타 줄과 확실히 대비되게).
-  { gen; gen_cursor; gen_codex; } | awk -F'\037' \
+  { gen; [[ -z "$OTHER_AGENT_ROWS" ]] || printf '%s\n' "$OTHER_AGENT_ROWS"; } | awk -F'\037' \
       -v VT="$VT" -v RULE="$GRAY" -v NAME="${BOLD}${BLUE}" \
       -v Z="$RESET" -v AV="$avail" -v IND="$HDLS_IND" -v INDMAX="$HDLS_IND_MAX" '
     # emit <레코드> <깊이> : gen 이 남긴 들여쓰기 자리(\005)를 그 깊이만큼의 공백으로

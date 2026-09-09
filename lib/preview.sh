@@ -30,6 +30,27 @@ preview() {
       [[ -n "$waiting" ]] && stline="$status  ${RED}← $waiting${RESET}"
       printf '%sstatus %s %s\n' "$GRAY" "$RESET" "$stline"
     fi
+    # 목록과 동일하게 PID가 실제 열고 있는 세션 기록을 읽는다.
+    if [[ "$sid" == codex:* ]]; then
+      local cmodel csandbox ctoks ccap
+      codex_metrics_r "$(codex_rollout_of "$pid")"
+      cmodel="$_r"; csandbox="$_r3"; ctoks="$_r4"; ccap="$_r5"
+      [[ -n "$cmodel" ]] && \
+        printf '%smodel  %s %s%s%s\n' "$GRAY" "$RESET" "$(model_color "$cmodel")" "$cmodel" "$RESET"
+      [[ -n "$csandbox" ]] && \
+        printf '%ssandbox %s %s\n' "$GRAY" "$RESET" "$csandbox"
+      # 서브에이전트 — 목록의 🤖 배지와 같은 근거(프로세스 트리)다. transcript 가
+      # 없어 무엇을 시켰는지까지는 못 읽지만, 몇 개가 도는지는 여기서도 보여야
+      # 한다. 배지에만 숫자가 뜨고 상세가 비면 그 수가 어디서 나왔는지 알 길이 없다.
+      local nsub; nsub=$(codex_subagent_parents " $pid " | grep -c .)
+      if [[ "$nsub" =~ ^[0-9]+$ ]] && (( nsub > 0 )); then
+        printf '%sagents %s %s %s%s%s\n' "$GRAY" "$RESET" "$AG_EMOJI" "$YELLOW" "$nsub" "$RESET"
+      fi
+      if [[ "$ctoks" =~ ^[0-9]+$ && "$ccap" =~ ^[0-9]+$ && "$ccap" -gt 0 ]]; then
+        printf '%sctx    %s %s  %s(%s / %s tokens)%s\n' \
+          "$GRAY" "$RESET" "$(ctx_cell_cap "$ctoks" "$ccap")" "$DIM" "$ctoks" "$ccap" "$RESET"
+      fi
+    fi
   else
     local stline="$status"
     [[ -n "$waiting" ]] && stline="$status  ${RED}← $waiting${RESET}"

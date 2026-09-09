@@ -256,17 +256,30 @@ dkr_map() {
 #   자리가 중첩되면(본체에도 compose 가 있고 워크트리에도 있으면) 가장 가까운
 #   조상 하나만 고른다 — 워크트리 세션은 워크트리 스택에만, 본체 세션은 본체
 #   스택에만 붙는다. 스택 하나가 두 세션 그룹에 겹쳐 세어지지 않는다.
+#
+#   조상마다 '<자리>/.claude' 를 한 칸 먼저 본다. `-f .claude/compose.test.yml` 로
+#   띄우면 compose 가 박는 working_dir 라벨은 그 파일이 있던 .claude 폴더라, 세션이
+#   앉는 워크트리 루트보다 한 칸 아래가 된다 — 조상 방향으로만 훑으면 세션 바로
+#   밑에 있는 자기 스택을 영영 못 만난다. 워크트리마다 전용 compose 를 .claude 에
+#   두는 배치가 흔해서 이 한 칸이 실제로 크다.
+#
+#   .claude 를 본체(우선순위)로 두는 건 그쪽이 더 구체적인 자리여서다 — 워크트리
+#   루트에도 compose 가 있고 .claude 에도 있으면 세션이 실제로 띄운 쪽은 후자다.
+#   내려가는 건 딱 이 한 칸뿐이다. 임의 하위까지 열면 저장소 루트 세션이 모든
+#   워크트리 스택을 통째로 빨아들인다.
 # ---------------------------------------------------------------------------
 dkr_count_r() {
-  local dir="${1:-}" p rest n
+  local dir="${1:-}" p c rest n
   [[ -n "$dir" && -n "${DKR_MAP:-}" ]] || { _r=0; return 0; }
   p="$dir"
   while [[ -n "$p" ]]; do
-    case "$DKR_MAP" in *$'\036'"$p"$'\037'*)
-      rest="${DKR_MAP##*$'\036'"$p"$'\037'}"
-      n="${rest%%$'\036'*}"
-      [[ "$n" =~ ^[0-9]+$ ]] && { _r="$n"; return 0; } ;;
-    esac
+    for c in "$p/.claude" "$p"; do
+      case "$DKR_MAP" in *$'\036'"$c"$'\037'*)
+        rest="${DKR_MAP##*$'\036'"$c"$'\037'}"
+        n="${rest%%$'\036'*}"
+        [[ "$n" =~ ^[0-9]+$ ]] && { _r="$n"; return 0; } ;;
+      esac
+    done
     [[ "$p" == */* ]] || break        # 더 올라갈 곳이 없다 (상대경로의 마지막 조각)
     p="${p%/*}"                       # '/a/b' → '/a' → '' (루트에서 끝난다)
   done
@@ -303,8 +316,17 @@ srv_docker() {
   # 자리를 먼저 정하고(가장 가까운 조상) 그 자리 행만 편다. 한 번에 못 하는 건
   # 조상 후보가 파일 뒤쪽에 나올 수 있어서다 — 줄을 담아 두고 END 에서 고른다.
   LC_ALL=C awk -F'\t' -v dir="$dir" '
-    $1 != "" && ($1 == dir || index(dir, $1 "/") == 1) {
-      if (length($1) > length(best)) best = $1      # 가장 긴 = 가장 가까운 조상
+    # 자리 판정은 dkr_count_r(목록 배지)·stats(헤더 통계)와 같아야 한다 — 조상이거나,
+    # 조상 바로 밑 .claude 한 칸. 순위는 조상 경로가 길수록(가까울수록) 높고, 같은
+    # 조상이면 .claude 쪽이 더 구체적이라 이긴다.
+    function base_of(cd,   b) { b = cd; sub(/\/\.claude$/, "", b); return b }
+    function rank_of(cd,   b) { b = base_of(cd); return length(b) * 2 + (b == cd ? 0 : 1) }
+    $1 != "" {
+      bb = base_of($1)
+      if (bb == dir || index(dir, bb "/") == 1) {
+        rr = rank_of($1)
+        if (rr > bestr) { bestr = rr; best = $1 }
+      }
     }
     { rows[NR] = $0 }
     END {
