@@ -13,6 +13,9 @@ preview() {
   local status="${6:-}" waiting="${7:-}" name="${8:-}"
   local ppid_s="${9:-}" pname_s="${10:-}"
   local title="${name:-$(basename "$cwd" 2>/dev/null)}"
+  # codex 행의 실효 cwd — 아래 브랜치·워크트리 절이 쓴다. 이 값은 rollout 에서만
+  # 나오는데 그 파일을 읽는 자리가 아래 codex 분기라, 거기서 받아 둔다.
+  local cecwd=""
 
   # 활동 모드('p' 세 번째)는 화면을 통째로 쓰는 다른 그림이다 — 여기서 갈라진다.
   [[ "$(preview_mode)" == 2 ]] && { activity_view "$@"; return 0; }
@@ -34,7 +37,7 @@ preview() {
     if [[ "$sid" == codex:* ]]; then
       local cmodel csandbox ctoks ccap
       codex_metrics_r "$(codex_rollout_of "$pid")"
-      cmodel="$_r"; csandbox="$_r3"; ctoks="$_r4"; ccap="$_r5"
+      cmodel="$_r"; csandbox="$_r3"; ctoks="$_r4"; ccap="$_r5"; cecwd="$_r6"
       [[ -n "$cmodel" ]] && \
         printf '%smodel  %s %s%s%s\n' "$GRAY" "$RESET" "$(model_color "$cmodel")" "$cmodel" "$RESET"
       [[ -n "$csandbox" ]] && \
@@ -77,6 +80,10 @@ preview() {
   tx0=$(tx_of "$cwd" "$sid")
   proj0=$(git_root "$cwd"); proj0="${proj0:-$cwd}"
   ecwd=$(cwd_of "$tx0")
+  # codex 세션엔 claude transcript 가 없어 cwd_of 가 빈 값이다 — rollout 에서 받아
+  # 둔 값으로 채운다. 그래야 워크트리에서 일하는 codex 세션의 브랜치·⑂ 가 목록
+  # 행과 같은 값이 된다 (gen_codex 의 실효 cwd 와 같은 근거).
+  [[ -z "$ecwd" && -n "$cecwd" ]] && ecwd="$cecwd"
   case "$ecwd" in "$proj0"|"$proj0"/*) ;; *) ecwd="$cwd" ;; esac
   [[ "$ecwd" != "$cwd" ]] && printf '       %s↳ %s%s\n' "$DIM" "${ecwd#$cwd/}" "$RESET"
   br=$(git_branch "$ecwd"); wt=$(git_worktree "$ecwd")

@@ -109,7 +109,7 @@ CC_TOP_LST=""
 # codex 첫 행에만 🤖 배지를 붙여 활동 슬롯이 넓어진 행을 섞는다.
 codex_subagent_parents() { printf '960301\n'; }
 codex_rollout_of() { :; }
-codex_metrics_r() { _r="gpt-6-astra"; _r2=""; _r3=""; _r4=250000; _r5=1000000; }
+codex_metrics_r() { _r="gpt-6-astra"; _r2=""; _r3=""; _r4=250000; _r5=1000000; _r6=""; }
 
 output=$(gen_all) || fail "gen_all 이 실패했다"
 printf '%s\n' "$output" | AGENT_W="$AGENT_W" python3 -c '

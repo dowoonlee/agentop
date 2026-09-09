@@ -251,27 +251,38 @@ codex_metrics_pick() {
       if $e.type == "turn_context" then
         .model = ($e.payload.model // .model) |
         .mode = ($e.payload.approval_policy // .mode) |
-        .sandbox = ($e.payload.sandbox_policy.type // .sandbox)
+        .sandbox = ($e.payload.sandbox_policy.type // .sandbox) |
+        .rootcwd = ($e.payload.cwd // .rootcwd)
       elif $e.type == "event_msg" and $e.payload.type == "token_count"
            and $e.payload.info != null then
         .tokens = ($e.payload.info.last_token_usage.total_tokens //
           (($e.payload.info.last_token_usage.input_tokens // 0) +
            ($e.payload.info.last_token_usage.output_tokens // 0))) |
         .cap = $e.payload.info.model_context_window
+      elif $e.type == "event_msg" and ($e.payload.item?.type? // "") == "CommandExecution"
+           and ($e.payload.item.cwd? // "") != "" then
+        .cwd = $e.payload.item.cwd
       else . end)'
 }
 
-codex_metrics_r() { # <rollout path> -> model, mode, sandbox, tokens, cap
+codex_metrics_r() { # <rollout path> -> model, mode, sandbox, tokens, cap, 실효cwd
   local file="${1:-}" data
-  _r=""; _r2=""; _r3=""; _r4=""; _r5=""
+  _r=""; _r2=""; _r3=""; _r4=""; _r5=""; _r6=""
   [[ -r "$file" ]] || return 0
   data=$(tail -c 1048576 "$file" 2>/dev/null | codex_metrics_pick)
   if ! printf '%s' "$data" | jq -e '.model != null and .tokens != null and .cap != null' >/dev/null; then
     data=$(codex_metrics_pick < "$file")
   fi
-  IFS=$'\037' read -r _r _r2 _r3 _r4 _r5 < <(
-    printf '%s' "$data" | jq -r '[.model, .mode, .sandbox, .tokens, .cap] |
+  # 실효 cwd 는 CommandExecution 의 cwd 를 먼저 본다 — turn_context.cwd 는 세션을
+  # 띄운 자리라 워크트리로 들어가도 안 움직인다(그 값은 폴백으로만 쓴다).
+  IFS=$'\037' read -r _r _r2 _r3 _r4 _r5 _r6 < <(
+    printf '%s' "$data" | jq -r '[.model, .mode, .sandbox, .tokens, .cap, (.cwd // .rootcwd)] |
       map(if . == null then "" else tostring end) | join("\u001f")')
+  # CommandExecution 의 cwd 는 file:// URI 로 온다. 스킴을 떼고, 퍼센트 인코딩이
+  # 섞였을 때만 푼다 — %XX 가 없는 경로에 printf %b 를 돌리면 경로 안의 역슬래시가
+  # 이스케이프로 해석된다.
+  _r6="${_r6#file://}"
+  case "$_r6" in *%*) _r6=$(printf '%b' "${_r6//%/\\x}") ;; esac
 }
 
 
@@ -371,13 +382,22 @@ gen_codex() {
   for i in "${!pids[@]}"; do
     pid="${pids[$i]}"; tty="${ttys[$i]}"; cwd="${cwds[$i]}"
     dir=$(basename "$cwd" 2>/dev/null)
+    proj=$(git_root "$cwd"); proj="${proj:-$cwd}"
     codex_metrics_r "$(codex_rollout_of "$pid")"
-    model="$_r"; ctoks="$_r4"; ccap="$_r5"
+    model="$_r"; ctoks="$_r4"; ccap="$_r5"; ecwd="$_r6"
     ctx_cell_cap_r "$ctoks" "$ccap"; ctxc="$_r"
-    # 실효 cwd — codex 의 rollout 은 turn_context 에 cwd 를 남기지만 관측상 세션을
-    # 띄운 자리에서 안 움직인다(워크트리로 들어가도 turn cwd 는 그대로다). 그래서
-    # 프로세스 cwd 가 그대로 실효 cwd 다. 헤더 통계가 컨테이너 귀속에 쓰는 값이다.
-    ecwd="$cwd"; [[ "$ecwd" == "?" ]] && ecwd=""
+    # 실효 cwd — '지금 어디서 일하는지'. 프로세스 cwd 도 turn_context.cwd 도 세션을
+    # 띄운 자리에서 안 움직여서, 워크트리에 들어가 일하는 세션이 목록에서는 계속
+    # 본체 체크아웃의 브랜치를 달고 있었다(워크트리 배지는 아예 안 붙었다). 실제로
+    # 움직이는 값은 rollout 의 CommandExecution 아이템 cwd — 그 세션이 마지막으로
+    # 명령을 돌린 자리다. 아직 명령을 안 돌린 세션에는 없으므로 프로세스 cwd 로
+    # 떨어진다. 헤더 통계·🐳 귀속도 같은 값을 본다.
+    #
+    # 프로젝트 밖으로 나간 값은 되돌린다 — claude 행(gen)과 같은 규칙이다. 세션이
+    # 잠깐 다른 저장소에서 명령을 돌려도 행이 앞뒤로 안 맞게 되지 않는다.
+    [[ -n "$ecwd" ]] || ecwd="$cwd"
+    case "$ecwd" in "$proj"|"$proj"/*) ;; *) ecwd="$cwd" ;; esac
+    [[ "$ecwd" == "?" ]] && ecwd=""
     nag=""; (( ${nags[$i]:-0} > 0 )) && nag="${nags[$i]}"
     agent_act_r "$pid" "$ecwd" "$nag"; actc="$_r"; actw="$_r2"; sports="$_r3"; nsrv="$_r4"
     # codex 는 내용이 화면 상단에 몰리고 하단이 공백인 경우가 많아, 그냥 tail 하면
@@ -388,7 +408,7 @@ gen_codex() {
       | tail -n "$CDX_TAIL")
     IFS=$'\037' read -r status waiting < <(printf '%s\n' "$scrtail" | codex_classify)
     status="${status:-codex}"; waiting="${waiting:-}"
-    wtb=$(wt_badge "$cwd")
+    wtb=$(wt_badge "${ecwd:-$cwd}")
     lab=""
     [[ -n "$waiting" ]] && lab="← $waiting"
     if [[ "$status" == waiting ]]; then
@@ -410,8 +430,8 @@ gen_codex() {
         "${wtb:+$wtb }" "$MAGENTA" "$lab" "$RESET")
     fi
     # PID가 열고 있는 세션 기록의 최신 모델과 토큰 사용량을 표시한다.
-    col1="$col1$VT$(meta_line "$cwd" "$model")"
-    proj=$(git_root "$cwd"); proj="${proj:-$cwd}"
+    # 브랜치는 '지금 일하는 자리'(실효 cwd) 기준 — 1행 워크트리 배지와 같은 근거다.
+    col1="$col1$VT$(meta_line "${ecwd:-$cwd}" "$model")"
     # 필드 배치는 claude 행(gen)과 같다 — 14 활동폭, 15~17 🤖⚡🔭, 18 모델,
     # 19 서버 수, 20 포트 목록, 21 실효 cwd, 22~23 headless 부모(codex 엔 없다).
     # ⚡🔭 는 근거가 claude transcript 뿐이라 0 으로 둔다.
