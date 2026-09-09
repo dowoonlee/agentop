@@ -113,3 +113,58 @@ f15=$(printf '%s' "$row" | LC_ALL=C awk -F'\037' '{print $15}')
 [[ "$f15" == 1 ]] || fail "15(서브에이전트 수)가 '$f15' (1 이어야 한다)"
 
 printf 'Codex record-field checks passed\n'
+
+# ---------------------------------------------------------------------------
+# 헬퍼 프로세스 걸러내기 — `codex sandbox`(명령 실행 헬퍼)가 세션 행으로 서면
+#   같은 세션이 목록에 두세 줄로 선다. 부모의 tty 를 물려받아 tty 필터를 통과하고
+#   comm 도 codex 라, 여기서 안 거르면 화면에 그대로 중복돼 나온다.
+#   판정은 서브커맨드 한 자리로만 한다 — codex 는 프롬프트를 인자로 받으므로
+#   argv 전체를 부분 문자열로 훑으면 프롬프트에 그 단어가 든 세션까지 사라진다.
+# ---------------------------------------------------------------------------
+chkhelper() {  # <argv> <helper|session>
+  local want="$2" got=session
+  codex_helper_argv "$1" && got=helper
+  [[ "$got" == "$want" ]] || fail "헬퍼 판정: '$1' → $got (기대 $want)"
+}
+chkhelper 'codex sandbox -c shell_environment_policy.inherit=all -- /bin/zsh -lc make' helper
+chkhelper '/App/Codex.app/Contents/Resources/codex app-server --listen stdio://'       helper
+chkhelper 'codex -c features.code_mode_host=true app-server --analytics-default-enabled' helper
+chkhelper 'codex --yolo resume'             session
+chkhelper 'codex resume'                    session
+chkhelper 'codex --yolo'                    session
+chkhelper 'codex'                           session
+chkhelper 'codex exec 프롬프트 안의 sandbox 라는 단어'  session
+# 옵션 값이 서브커맨드로 오독되면 진짜 세션이 목록에서 통째로 사라진다.
+chkhelper 'codex --sandbox workspace-write' session
+chkhelper 'codex -m gpt-6-astra --sandbox danger-full-access' session
+
+# gen_codex 도 같은 판정을 쓰는가 — 세션 하나 + 헬퍼 둘이 있는 tty 에서 한 줄만.
+ps() {
+  case "${1:-}" in
+    -axo)
+      case "${2:-}" in
+        "pid=,comm=")       printf '%s\n' '970001 codex' '970100 /App/Codex.app/Contents/Resources/codex' \
+                                          '970101 /App/Codex.app/Contents/Resources/codex' ;;
+        "pid=,ppid=,args=") printf '%s\n' '970001 1 codex resume' \
+                                          '970010 970001 /App/Codex.app/Contents/Resources/cua_node/bin/node_repl' \
+                                          '970100 970010 /App/Codex.app/Contents/Resources/codex app-server --listen stdio://' \
+                                          '970101 970010 /App/Codex.app/Contents/Resources/codex sandbox -c x=y -- make' ;;
+      esac ;;
+    -o)
+      case "${4:-}" in
+        970001) printf 'ttys900 1.0 204800 01:00:00 codex resume\n' ;;
+        970100) printf 'ttys900 0.1 102400 00:50:00 /App/Codex.app/Contents/Resources/codex app-server --listen stdio://\n' ;;
+        970101) printf 'ttys900 0.1 102400 00:01:00 /App/Codex.app/Contents/Resources/codex sandbox -c x=y -- make\n' ;;
+      esac ;;
+  esac
+}
+rows=$(gen_codex)
+n=$(printf '%s\n' "$rows" | grep -c .)
+[[ "$n" == 1 ]] || fail "세션 행이 $n 개다 (sandbox/app-server 헬퍼가 섞였다):\n$rows"
+pid=$(printf '%s' "$rows" | LC_ALL=C awk -F'\037' '{print $2}')
+[[ "$pid" == 970001 ]] || fail "세션이 아닌 pid($pid)가 행으로 섰다"
+# app-server 만 🤖 로 접힌다 — sandbox 는 서브에이전트가 아니라 세션이 돌리는 명령.
+nag=$(printf '%s' "$rows" | LC_ALL=C awk -F'\037' '{print $15}')
+[[ "$nag" == 1 ]] || fail "15(서브에이전트 수)가 '$nag' (app-server 1개만 세야 한다)"
+
+printf 'Codex helper-process filter checks passed\n'

@@ -292,6 +292,35 @@ codex_metrics_r() { # <rollout path> -> model, mode, sandbox, tokens, cap
 #   sid 는 "codex:<pid>" 로 둬서 preview transcript 조회를 건너뛰고 커서 추적
 #   키를 고유화한다.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# codex_helper_argv <argv> : 이 명령줄이 '세션' 이 아니라 세션이 낳은 헬퍼인가.
+#   app-server(부모가 stdio 로 물고 도는 자식) 또는 sandbox(명령 하나를 seatbelt
+#   안에서 돌리는 실행 헬퍼)면 성공(0).
+#
+#   argv0 을 뗀 뒤 첫 위치 인자만 본다 — 헬퍼는 언제나 `<codex> <서브커맨드> …`
+#   꼴로 뜬다. 앞에 `-c key=val` 이 붙는 경우(Codex.app 이 그렇게 띄운다)만
+#   값까지 건너뛰고, 그 밖의 플래그를 만나면 거기서 '세션' 으로 판정하고 멈춘다.
+#   `--sandbox workspace-write` 같은 옵션 값이 서브커맨드로 오독되지 않게 하려면
+#   이 '첫 자리에서 멈춘다' 가 필요하다.
+#
+#   argv 전체를 부분 문자열로 훑지 않는 이유도 같다 — codex 는 프롬프트를 인자로
+#   받으므로, 프롬프트 안에 든 단어까지 매칭하면 진짜 세션이 목록에서 사라진다.
+# ---------------------------------------------------------------------------
+codex_helper_argv() {
+  local rest="${1:-}" tok
+  case "$rest" in *" "*) rest="${rest#* }" ;; *) return 1 ;; esac   # argv0 제거
+  while [[ -n "$rest" ]]; do
+    tok="${rest%% *}"
+    case "$rest" in *" "*) rest="${rest#* }" ;; *) rest="" ;; esac
+    case "$tok" in
+      app-server|sandbox) return 0 ;;
+      -c|--config) case "$rest" in *" "*) rest="${rest#* }" ;; *) rest="" ;; esac ;;
+      *) return 1 ;;
+    esac
+  done
+  return 1
+}
+
 gen_codex() {
   local now; now=$(date +%s)
   local pids=() ttys=() cwds=() cpus=() rsss=() starteds=()
@@ -301,10 +330,17 @@ gen_codex() {
     read -r ptty pcpu prss etime pargs < <(ps -o tty=,%cpu=,rss=,etime=,args= -p "$pid" 2>/dev/null)
     tty="${ptty:-}"
     [[ -z "$tty" || "$tty" == "??" ]] && continue   # GUI·플러그인 헬퍼(tty 없음) 제외
-    # 세션이 낳은 서브에이전트 — tty 를 물려받아 위 필터를 통과한다. 세션 행으로
-    # 세우지 않고 건너뛴 뒤, 아래에서 부모 행의 🤖 로 접는다. 거르는 문자열은
-    # codex_subagent_parents 의 awk 와 같아야 한다.
-    case " $pargs " in *" app-server"*) continue ;; esac
+    # 세션이 낳은 헬퍼 프로세스 — 부모의 tty 를 그대로 물려받아 위 필터를 통과한다.
+    # 세션 행으로 세우면 같은 세션이 목록에 두세 줄로 선다.
+    #   app-server : 부모가 stdio 로 물고 도는 자식. 아래에서 부모 행의 🤖 로 접는다
+    #                (거르는 이름은 codex_subagent_parents 의 awk 와 같아야 한다).
+    #   sandbox    : 명령 하나를 seatbelt 안에서 돌리는 실행 헬퍼. 동시에 여럿 뜨고,
+    #                🤖 로 접지도 않는다 — 서브에이전트가 아니라 그 세션이 지금
+    #                돌리는 셸 명령이라 개수를 배지에 실으면 뜻이 어긋난다.
+    # 판정은 '서브커맨드' 한 자리로만 한다. argv 전체를 부분 문자열로 훑으면
+    # 프롬프트에 그 단어가 든 진짜 세션까지 목록에서 사라진다 — codex 는 프롬프트를
+    # 인자로 받는다(`codex "sandbox 플레이키 고쳐줘"`).
+    codex_helper_argv "$pargs" && continue
     cpu="${pcpu%%.*}"; [[ "$cpu" =~ ^[0-9]+$ ]] || cpu=0
     cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
     [[ -z "$cwd" ]] && cwd="?"
