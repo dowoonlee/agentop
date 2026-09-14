@@ -244,6 +244,13 @@ codex_rollout_of() {
 # Only extract monitoring fields; prompts and tool output are never returned.
 # Ignore incomplete trailing JSON while Codex is writing. Start with the tail;
 # scan older records only if the current metadata or usage is missing.
+#
+# cwds / turncwds — 명령이 돈 자리들. 마지막 하나가 아니라 마지막으로 쓴 순서로
+#   모으고, 같은 자리는 뒤로 옮겨 하나만 남긴다. turncwds 는 turn_context 마다
+#   비운다 — 이전 턴의 자리는 cwds 에만 남아, 아직 명령을 안 돌린 새 턴의 폴백이
+#   된다. 어느 자리를 실효 cwd 로 고를지는 codex_metrics_r 이 파일시스템을 보고
+#   정한다(jq 는 디렉토리를 못 본다). jq 프로그램 안에 주석을 두지 않는 이유 —
+#   작은따옴표 하나가 셸 인용을 끊는다.
 codex_metrics_pick() {
   jq -Rn '
     reduce inputs as $line ({};
@@ -261,8 +268,11 @@ codex_metrics_pick() {
         .cap = $e.payload.info.model_context_window
       elif $e.type == "event_msg" and ($e.payload.item?.type? // "") == "CommandExecution"
            and ($e.payload.item.cwd? // "") != "" then
-        .cwd = $e.payload.item.cwd
-      else . end)'
+        ($e.payload.item.cwd) as $c |
+        .cwds = ((.cwds // []) - [$c]) + [$c] |
+        .turncwds = ((.turncwds // []) - [$c]) + [$c]
+      else . end |
+      if $e.type == "turn_context" then .turncwds = [] else . end)'
 }
 
 codex_metrics_r() { # <rollout path> -> model, mode, sandbox, tokens, cap, 실효cwd
@@ -273,16 +283,48 @@ codex_metrics_r() { # <rollout path> -> model, mode, sandbox, tokens, cap, 실�
   if ! printf '%s' "$data" | jq -e '.model != null and .tokens != null and .cap != null' >/dev/null; then
     data=$(codex_metrics_pick < "$file")
   fi
-  # 실효 cwd 는 CommandExecution 의 cwd 를 먼저 본다 — turn_context.cwd 는 세션을
-  # 띄운 자리라 워크트리로 들어가도 안 움직인다(그 값은 폴백으로만 쓴다).
-  IFS=$'\037' read -r _r _r2 _r3 _r4 _r5 _r6 < <(
-    printf '%s' "$data" | jq -r '[.model, .mode, .sandbox, .tokens, .cap, (.cwd // .rootcwd)] |
+  # 실효 cwd 는 CommandExecution 의 cwd 에서 고른다 — turn_context.cwd 는 세션을
+  # 띄운 자리라 워크트리로 들어가도 안 움직인다(그 값은 마지막 폴백으로만 쓴다).
+  #
+  # '마지막 명령의 cwd' 하나만 보면 안 된다. 워크트리에서 일하는 세션도 gh 조회·
+  # `git worktree list`·PR 머지 같은 살림은 본체 체크아웃에서 돌려서, 마지막 한 건이
+  # 어느 쪽인지는 그 순간 운이다 — 워크트리 행이 폴링마다 본체 브랜치(develop)와
+  # 워크트리 사이를 오갔고, 사용자 눈에는 '워크트리를 못 잡는다' 로 보였다.
+  #
+  #   ~c2/.claude/worktrees/5729-…   git add …            ← 실제 일하는 자리
+  #   ~c2                             sed .git/hooks/…    ← 마지막 명령(살림)
+  #
+  # 그래서 **지금 턴** 에서 명령이 돈 자리들을 최근순으로 훑어, 링크된 워크트리가
+  # 하나라도 있으면 그중 가장 최근 것을 고른다. 없으면 가장 최근 자리 그대로.
+  # 턴으로 자르는 이유 — 워크트리 일이 끝나고 본체로 돌아온 세션이 지난 턴의
+  # 워크트리를 계속 달고 있으면 안 된다. 새 턴에서 아직 명령을 안 돌렸으면 직전
+  # 턴들의 목록으로 떨어져 턴 경계마다 행이 깜빡이지 않는다.
+  # 이미 지워진 디렉토리는 건너뛴다 — 머지 후 워크트리를 정리한 세션이 없는 자리를
+  # 가리키면 브랜치 조회가 빈 값이 되어 'no-git' 으로 보인다.
+  local model cands c fb="" j
+  IFS=$'\037' read -r model _r2 _r3 _r4 _r5 _r6 cands < <(
+    printf '%s' "$data" | jq -r '[.model, .mode, .sandbox, .tokens, .cap, .rootcwd,
+        ((if ((.turncwds // []) | length) > 0 then .turncwds else (.cwds // []) end) | join("\u001e"))] |
       map(if . == null then "" else tostring end) | join("\u001f")')
-  # CommandExecution 의 cwd 는 file:// URI 로 온다. 스킴을 떼고, 퍼센트 인코딩이
-  # 섞였을 때만 푼다 — %XX 가 없는 경로에 printf %b 를 돌리면 경로 안의 역슬래시가
-  # 이스케이프로 해석된다.
-  _r6="${_r6#file://}"
-  case "$_r6" in *%*) _r6=$(printf '%b' "${_r6//%/\\x}") ;; esac
+  local -a cs=()
+  [[ -n "$cands" ]] && IFS=$'\036' read -ra cs <<< "$cands"
+  for (( j=${#cs[@]}-1; j>=0; j-- )); do
+    codex_cwd_path_r "${cs[$j]}"; c="$_r"
+    [[ -d "$c" ]] || continue
+    git_worktree_r "$c"
+    [[ -n "$_r" ]] && { fb="$c"; break; }
+    [[ -n "$fb" ]] || fb="$c"
+  done
+  [[ -n "$fb" ]] && _r6="$fb"
+  _r="$model"
+}
+
+# codex_cwd_path_r <cwd> : CommandExecution 의 cwd 를 경로로. file:// URI 로 오므로
+#   스킴을 떼고, 퍼센트 인코딩이 섞였을 때만 푼다 — %XX 가 없는 경로에 printf %b 를
+#   돌리면 경로 안의 역슬래시가 이스케이프로 해석된다.
+codex_cwd_path_r() {
+  _r="${1#file://}"
+  case "$_r" in *%*) _r=$(printf '%b' "${_r//%/\\x}") ;; esac
 }
 
 
@@ -436,7 +478,7 @@ gen_codex() {
     # 19 서버 수, 20 포트 목록, 21 실효 cwd, 22~23 headless 부모(codex 엔 없다).
     # ⚡🔭 는 근거가 claude transcript 뿐이라 0 으로 둔다.
     printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\0370\0370\037%s\037%s\037%s\037%s\037\037\n' \
-      "$col1" "$pid" "$tty" "codex:$pid" "$cwd" "${starteds[$i]}" "$status" "$waiting" "$dir" "${cpus[$i]}" "${rsss[$i]}" "$proj" "$(git_worktree "$cwd")" \
+      "$col1" "$pid" "$tty" "codex:$pid" "$cwd" "${starteds[$i]}" "$status" "$waiting" "$dir" "${cpus[$i]}" "${rsss[$i]}" "$proj" "$(git_worktree "${ecwd:-$cwd}")" \
       "$actw" "${nag:-0}" "${model:-}" "${nsrv:-0}" "${sports:-}" "$ecwd"
   done
 }
