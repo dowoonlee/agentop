@@ -259,11 +259,19 @@ gen() {
   # 세션 목록을 파이프로 바로 while 에 물리지 않고 한 번 받아 둔다 — 파이프로
   # 흘리면 pid 를 미리 모을 수 없어 ps 를 세션마다 따로 불러야 한다(아래 PS_MAP).
   local rows
+  # background 세션도 받는다 — 세션을 백그라운드로 보내면(/bg) 원래의 interactive
+  # 프로세스는 --json 에서 사라지고(세션 파일에 parkedJobId 만 남는다) 일은
+  # kind=="background" 행이 이어받는다. interactive 만 고르면 그 작업이 목록에서
+  # 통째로 빠진다. pid 가 없는 background 는 끝난 job 의 기록이라 행이 아니다.
+  # state=="blocked" 는 사람 답을 기다린다는 뜻 — status 는 busy 로 오지만 실은
+  # HITL 이라 waiting 으로 올린다. 사유(needs)는 job 파일에 있어 id 를 같이 싣는다.
   rows=$(claude agents --json 2>/dev/null | jq -r '
-    [ .[] | select(.kind=="interactive") ]
+    [ .[] | select(.kind=="interactive" or (.kind=="background" and .pid != null)) ]
     | sort_by(.pid) | .[] |
-    [ (.pid|tostring), (.status // "?"), (.waitingFor // ""), .cwd,
-      (.name // ""), (.sessionId // "-"), ((.startedAt // 0)|tostring) ] | join("")
+    [ (.pid|tostring), (if .state=="blocked" then "waiting" else (.status // "?") end),
+      (.waitingFor // ""), .cwd,
+      (.name // ""), (.sessionId // "-"), ((.startedAt // 0)|tostring),
+      (if .kind=="background" then (.id // "") else "" end) ] | join("")
   ')
   [[ -n "$rows" ]] || return 0
 
@@ -308,7 +316,7 @@ gen() {
   # 루프 안에서만 쓰는 값들 — 예전엔 파이프 서브셸이 감싸 줘서 함수 밖으로 안
   # 샜는데, 이제 서브셸이 없으므로 여기서 명시적으로 함수 스코프에 가둔다.
   local tty dir icon lab col1 psline
-  while IFS=$'\037' read -r pid status waiting cwd name sid started; do
+  while IFS=$'\037' read -r pid status waiting cwd name sid started jobid; do
         [[ -n "$pid" ]] || continue
         # tty + cpu + rss + stat 은 위에서 받아 둔 ps 한 벌에서 제 줄만 집어 온다.
         # cpu 는 정수%(리스트 표시·서명용), rss 는 MB(요약/preview 용).
@@ -385,6 +393,13 @@ gen() {
             esac
           fi
         fi
+        # background 세션의 대기 사유는 job 파일의 needs 에 있다. 문장으로 와서
+        # 길다 — 1행을 밀어내지 않게 자른다 (전문은 preview 몫).
+        if [[ -n "$jobid" && "$status" == waiting && -z "$waiting" ]]; then
+          local jsf="$HOME/.claude/jobs/$jobid/state.json"
+          [[ -f "$jsf" ]] && waiting=$(jq -r '.needs // .detail // ""' "$jsf" 2>/dev/null)
+          [[ -n "$waiting" ]] && waiting=$(trunc_disp "$waiting" "$BG_NEEDS_MAX")
+        fi
         # 상태는 아이콘(모양+색)이 전담하고, 그 뒤 컬럼은 에이전트 이름이 가져간다 —
         # 두 값을 한 자리에 겹쳐 놓으면 busy 일 때 색이 상태에 먹혀 claude/cursor/codex
         # 가 안 갈렸다 (const.sh 의 AGENT_W 주석 참조). claude 행은 전부 CLAUDE 다.
@@ -408,6 +423,10 @@ gen() {
         # 여기 붙으면 '되살릴 수 있는 세션' 으로 잘못 읽힌다.
         if [[ -n "$hl" ]]; then
           [[ -n "$hprompt" ]] && lab="← $(trunc_disp "$hprompt" "$HDLS_PROMPT_MAX")"
+        elif [[ -n "$jobid" ]]; then
+          # background 세션의 tty 는 데몬이 쥔 pty 라 iTerm 탭이 아니다 — 있어도
+          # 점프할 곳이 없고, 없어도 (detached) 가 아니다. `claude agents` 로 붙는다.
+          lab="${lab:+$lab }(bg)"
         elif [[ "$tty" == "-" ]]; then
           lab="${lab:+$lab }(detached)"
         fi

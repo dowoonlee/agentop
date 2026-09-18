@@ -235,6 +235,7 @@ HDLSC=$'\e[38;5;66m'            # headless 행 색 (탁한 청록). 살아있는
                                 #   STOPC(정지 잔재)보다는 밝다 — 돌고 있지만 사람이
                                 #   들여다볼 화면은 아니라는 중간 톤.
 HDLS_PROMPT_MAX=30              # 1행에 붙일 -p 프롬프트 조각의 최대 표시폭
+BG_NEEDS_MAX=40                 # 1행에 붙일 background 세션 대기 사유(needs)의 최대 표시폭
 HDLS_HOP_MAX=12                 # 부모 세션을 찾아 ppid 를 거슬러 오를 최대 단계.
                                 #   claude -p → python → zsh → claude 처럼 3~4 단계가
                                 #   보통이고, SRV_ANCESTOR_MAX 와 같은 이유로 순환이
