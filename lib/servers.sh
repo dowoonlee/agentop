@@ -11,8 +11,12 @@
 #   보이던 것들이다.
 #
 #   귀속은 프로세스 조상으로 판정한다: 리스닝 pid 에서 부모를 거슬러 올라가다
-#   `claude` 를 만나면 그 세션의 서버다. 실측한 체인은 이렇다 —
+#   세션 프로세스(`claude` · `codex` · `cursor-agent`)를 만나면 그 세션의 서버다.
+#   실측한 체인은 이렇다 —
 #     node(vite) → npm exec vite → /bin/zsh -c → claude   (2~4 단계)
+#     node(vite) → pnpm exec vite → codex                   (2 단계)
+#   codex 만은 첫 만남에서 멈추지 않고 계속 올라간다 — `codex sandbox` 같은 헬퍼도
+#   comm 이 codex 라, 거기서 끊으면 세션 행이 자기 서버를 못 받는다.
 #   포트 번호로 추측하거나 명령 문자열을 패턴 매칭하지 않는 이유: 실제 명령이
 #   `docker compose up --build` 인데 그 안에서 vite 가 뜨는 식이라 문자열로는
 #   못 잡는다. 조상 추적은 무엇을 어떻게 띄웠든 결과(열린 포트)만 본다.
@@ -56,7 +60,15 @@ srv_map() {
     $1 == "L" {
       lp = $2; p = lp                       # lp = 실제로 포트를 물고 있는 프로세스
       for (i = 0; i < MAXUP && p != "" && p != "0" && p != "1"; i++) {
-        if (comm[p] == "claude") { if (!((p, $3) in seen)) { seen[p, $3] = 1; port[p] = port[p] " " $3 "/" lp } ; break }
+        # comm 은 전체 경로로 올 수 있다 (Codex.app 안의 codex 처럼) — basename 으로 본다.
+        c = comm[p]; sub(/.*\//, "", c)
+        if (c == "claude" || c == "codex" || c == "cursor-agent") {
+          if (!((p, $3) in seen)) { seen[p, $3] = 1; port[p] = port[p] " " $3 "/" lp }
+          # codex 는 멈추지 않는다 — 헬퍼(`codex sandbox`·`codex app-server`)도 comm 이
+          # codex 라, 첫 codex 에서 끊으면 포트가 헬퍼 pid 에 붙고 세션 행에는 안 닿는다.
+          # 헬퍼 pid 는 세션이 아니라 조회되지 않으므로 그 항목은 그냥 버려진다.
+          if (c != "codex") break
+        }
         p = ppid[p]
       }
     }
