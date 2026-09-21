@@ -8,7 +8,7 @@
 # tasks_extract <transcript> : 백그라운드 태스크(shell/monitor) 레코드 추출.
 #   출력 1줄 = kind \037 state \037 시작ISO \037 설명   (시작 순서 유지)
 #     kind  : sh(Bash run_in_background) | mon(Monitor)
-#     state : run | completed | failed | killed
+#     state : run | completed | failed | killed | timeout
 #
 #   transcript 안에서 한 태스크는 세 레코드에 흩어져 있다:
 #     ① assistant tool_use   — 종류(Bash+run_in_background / Monitor)와 설명.
@@ -27,17 +27,21 @@
 #   id 만 출력하므로 남의 id 는 목록에 오르지 않는다.
 # ---------------------------------------------------------------------------
 tasks_extract() {
-  LC_ALL=C grep -aE '"run_in_background":true|"name":"Monitor"|"backgroundTaskId":"|"toolUseResult":\{"taskId":"|<status>|Monitor timed out|"name":"TaskStop"|"name":"KillShell"' \
+  LC_ALL=C grep -aE '"run_in_background":true|"name":"Monitor"|"backgroundTaskId":"|"toolUseResult":\{"taskId":"|<status>|\[Monitor (expired|timed out)|"name":"TaskStop"|"name":"KillShell"' \
     "$1" 2>/dev/null | LC_ALL=C awk '
     function unesc(s) { gsub(/\\n/, " ", s); gsub(/\\"/, "\"", s); gsub(/\\\\/, "\\", s); return s }
 
-    # ③ 종료 알림 — 같은 줄에 <task-id> 와 <status> 가 함께 온다. 단 타임아웃으로
-    #    끊긴 Monitor 만은 <status> 없이 이벤트 문구(Monitor timed out)로 끝난다.
-    /<status>|Monitor timed out/ {
+    # ③ 종료 알림 — 같은 줄에 <task-id> 와 <status> 가 함께 온다. 단 수명이 다해
+    #    끊긴 Monitor 만은 <status> 없이 <event> 문구로 끝난다. 문구가 두 벌이라
+    #    둘 다 받는다 — [Monitor expired after 30m …] 가 지금 쓰이는 쪽이고
+    #    [Monitor timed out — re-arm if needed.] 는 옛 로그에 남아 있다. 여는
+    #    대괄호까지 붙여 보는 건, 이 문구를 인용한 소스·grep 결과가 다시 transcript
+    #    에 실려도 이벤트가 아닌 줄을 종료로 읽지 않게 하려는 것이다.
+    /<status>|\[Monitor (expired|timed out)/ {
       fid = ""; st = ""
       if (match($0, /<task-id>[a-z0-9]+/)) fid = substr($0, RSTART+9, RLENGTH-9)
       if (match($0, /<status>[a-z]+/))     st  = substr($0, RSTART+8, RLENGTH-8)
-      else if ($0 ~ /Monitor timed out/)   st  = "timeout"
+      else if ($0 ~ /\[Monitor (expired|timed out)/) st = "timeout"
       if (fid != "" && st != "") fin[fid] = st
     }
 
@@ -97,8 +101,8 @@ tasks_extract() {
 tasks_scan() {
   local tx="${1:-}" sig f cached
   [[ -n "$tx" && -f "$tx" ]] || return 0
-  # v1 은 캐시 포맷 버전 — tasks_extract 출력 모양을 바꾸면 올려서 옛 캐시를 버린다
-  sig=$(stat -f 'v1:%z:%m' "$tx" 2>/dev/null)
+  # v2 는 캐시 포맷 버전 — tasks_extract 출력 모양·판정을 바꾸면 올려서 옛 캐시를 버린다
+  sig=$(stat -f 'v2:%z:%m' "$tx" 2>/dev/null)
   [[ -n "$sig" ]] || return 0
   f="$TASK_CACHE/${tx##*/}.tasks"
   if [[ -f "$f" ]]; then
