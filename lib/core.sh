@@ -348,6 +348,18 @@ preview_mode() {
 
 preview_shown() { [[ "$(preview_mode)" != 0 ]]; }
 
+preview_detail() {
+  local value=''
+  [[ -n "${CC_TOP_LST:-}" ]] && value=$(cat "$CC_TOP_LST.detail" 2>/dev/null)
+  [[ "$value" == 1 ]] && printf 1 || printf 0
+}
+
+toggle_detail() {
+  [[ -n "${CC_TOP_LST:-}" ]] || return 0
+  if [[ "$(preview_detail)" == 1 ]]; then printf 0 > "$CC_TOP_LST.detail"
+  else printf 1 > "$CC_TOP_LST.detail"; fi
+}
+
 main_width() {
   local cols="${1:-80}"
   [[ "$cols" =~ ^[0-9]+$ ]] || cols=80

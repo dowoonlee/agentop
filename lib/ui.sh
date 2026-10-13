@@ -354,7 +354,9 @@ build_header() {
     0) pv_item="p 활동" ;;
     *) pv_item="p 상세" ;;
   esac
-  local items=( "↑↓ 선택" "⏎ 탭 점프" "$pv_item" "k 강제종료" "r 새로고침" "q 종료" )
+  local detail_item='d 펼치기'
+  [[ "$(preview_detail)" == 1 ]] && detail_item='d 접기'
+  local items=( "↑↓ 선택" "⏎ 탭 점프" "$pv_item" "a AI 분석" "$detail_item" "k 강제종료" "r 새로고침" "q 종료" )
   local sep="   " sepw=3
   local avail=$(( $(main_width "$cols") - 2 ))
   (( avail < 10 )) && avail=10

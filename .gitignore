@@ -8,8 +8,15 @@
 *.wait
 *.cols
 *.pv
+*.detail
 
 # 로컬 Claude Code 프로젝트 설정 — 개인 절대경로가 박힌다
 .claude/
 
 .DS_Store
+
+# AI credentials/state must live outside the repository. Guard accidental copies.
+anthropic_api_key
+ai.json
+usage.sqlite3*
+__pycache__/

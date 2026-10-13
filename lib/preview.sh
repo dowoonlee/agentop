@@ -8,7 +8,7 @@
 # --preview pid tty sid cwd started status waiting name [부모pid] [부모이름]
 #   부모 둘은 headless(-p) 행에만 채워져 온다 (gen 의 필드 22·23).
 # ---------------------------------------------------------------------------
-preview() {
+preview_full() {
   local pid="${1:-}" tty="${2:-}" sid="${3:-}" cwd="${4:-}" started="${5:-0}"
   local status="${6:-}" waiting="${7:-}" name="${8:-}"
   local ppid_s="${9:-}" pname_s="${10:-}"
@@ -22,6 +22,7 @@ preview() {
 
   printf '%s%s%s\n' "$BLUE" "$title" "$RESET"
   printf '%s\n' "${DIM}────────────────────────────────────────${RESET}"
+  ai_block "$sid" full
 
   if [[ "$sid" == cursor:* || "$sid" == codex:* ]]; then
     local toolname toolcol fb
@@ -178,6 +179,96 @@ preview() {
   if [[ -n "$last" ]]; then
     printf '\n%s💬 last%s %s\n' "$GRAY" "$RESET" "${last:0:240}"
   fi
+}
+
+# Default preview: task first, with technical identifiers behind d.
+preview() {
+  [[ "$(preview_mode)" == 2 ]] && { activity_view "$@"; return 0; }
+  [[ "$(preview_detail)" == 1 ]] && { preview_full "$@"; return 0; }
+  local pid="${1:-}" tty="${2:-}" sid="${3:-}" cwd="${4:-}" started="${5:-0}"
+  local status="${6:-}" waiting="${7:-}" name="${8:-}" pname="${10:-}"
+  local pw="${FZF_PREVIEW_COLUMNS:-50}" title state sc tx ecwd proj br wt model="" toks=0 cap=$CTX_MAX
+  [[ "$pw" =~ ^[0-9]+$ ]] || pw=50
+  pw=$((pw - 2)); (( pw < 16 )) && pw=16
+  title="${name:-$(basename "$cwd")}"; sc="$GRAY"
+  case "$status" in
+    busy) state='● 실행 중'; sc="$YELLOW" ;;
+    waiting) state='◐ 응답 대기'; sc="$RED" ;;
+    stopped) state='⊘ 정지'; sc="$STOPC" ;;
+    headless) state='↳ 백그라운드'; sc="$HDLSC" ;;
+    idle) state='○ 대기' ;;
+    *) state='상태 미확인' ;;
+  esac
+  printf '\033[0m\033[22m'
+  printf '%s%s%s  %s%s%s\n' "$BLUE" "$(trunc_disp "$title" "$((pw-17))")" "$RESET" "$sc" "$state" "$RESET"
+  tx=$(tx_of "$cwd" "$sid")
+  ecwd=$(cwd_of "$tx")
+  if [[ "$sid" == codex:* ]]; then
+    codex_metrics_r "$(codex_rollout_of "$pid")"
+    model="$_r"; toks="${_r4:-0}"; cap="${_r5:-$CTX_MAX}"; ecwd="${_r6:-$cwd}"
+  elif [[ "$sid" == cursor:* ]]; then model='cursor-agent'
+  else model=$(model_pretty "$(model_of "$tx")"); toks=$(ctx_of "$tx")
+  fi
+  proj=$(git_root "$cwd"); proj="${proj:-$cwd}"
+  case "$ecwd" in "$proj"|"$proj"/*) ;; *) ecwd="$cwd" ;; esac
+  br=$(git_branch "$ecwd"); wt=$(git_worktree "$ecwd")
+  printf '%s%s%s\n' "$GRAY" "$(trunc_disp "${model:-모델 미확인} · ${br:-no-git}" "$pw")" "$RESET"
+  [[ -n "$wt" ]] && printf '%s%s%s\n' "$WTC" "$(trunc_disp "⑂ $wt" "$pw")" "$RESET"
+  [[ -n "$pname" ]] && printf '%s%s%s\n' "$HDLSC" "$(trunc_disp "↳ 부모 $pname" "$pw")" "$RESET"
+  if [[ -n "$waiting" ]]; then
+    printf '\n%s응답 대기%s\n' "$RED" "$RESET"
+    preview_text "$waiting"
+  fi
+  case "$sid" in cursor:*|codex:*) ;; *) ai_block "$sid" ;; esac
+  local rule='' i
+  for ((i=0; i<pw; i++)); do rule+='─'; done
+  printf '\n%s%s%s\n' "$DIM" "$rule" "$RESET"
+  local pcpu prss age='' pct='' rc="$GRAY"
+  read -r pcpu prss < <(ps -o %cpu=,rss= -p "$pid" 2>/dev/null)
+  if [[ "$started" =~ ^[0-9]+$ && "$started" -gt 0 ]]; then
+    local diff=$(( $(date +%s) - started/1000 ))
+    (( diff < 0 )) && diff=0
+    age=$(age_short "$diff")
+  fi
+  if [[ "$toks" =~ ^[0-9]+$ && "$cap" =~ ^[0-9]+$ ]] && (( toks > 0 && cap > 0 )); then
+    (( toks > cap )) && cap=1000000
+    pct=$(( toks * 100 / cap )); (( pct > 100 )) && pct=100
+    if (( pct >= 90 )); then rc="$RED"; elif (( pct >= 75 )); then rc="$YELLOW"; fi
+    printf '%s%s%s\n' "$rc" "$(trunc_disp "컨텍스트 ${pct}%${age:+ · 실행 $age}" "$pw")" "$RESET"
+  elif [[ -n "$age" ]]; then printf '%s실행 %s%s\n' "$GRAY" "$age" "$RESET"; fi
+  [[ -n "$pcpu" ]] && printf '%s%s%s\n' "$GRAY" "$(trunc_disp "CPU ${pcpu}% · 메모리 $(( ${prss:-0} / 1024 ))MB" "$pw")" "$RESET"
+  if [[ -f "$tx" ]]; then
+    local last; last=$(preview_last "$tx")
+    if [[ -n "$last" ]]; then
+      printf '\n%s마지막 요청%s\n' "$GRAY" "$RESET"
+      preview_text "$last"
+    fi
+    subagents_block "$tx"
+    tasks_block "$tx" "$(epoch_iso "$started")"
+  fi
+  srv_block "$pid" "$ecwd"
+  board_block "$sid" "$cwd"
+  printf '\n%s%s%s\n' "$GRAY" "$(trunc_disp 'd 세부 정보 · a AI 분석' "$pw")" "$RESET"
+}
+
+preview_text() {
+  printf '\033[22m\033[38;5;252m'
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s' "${1:-}" | ai_python wrap
+  else
+    printf '  %s\n' "$(trunc_disp "${1:-}" "$(( ${FZF_PREVIEW_COLUMNS:-50} - 4 ))")"
+  fi
+  printf '%s' "$RESET"
+}
+
+preview_last() {
+  jq -rs '[.[] | select(.type=="user" and (.isMeta != true))
+    | .message.content
+    | if type=="string" then . elif type=="array" then
+        [.[] | select(.type=="text") | .text] | join(" ") else "" end
+    | select(. != "" and (startswith("<system-reminder>") or startswith("<command-")
+        or startswith("[Request interrupted") or startswith("[Request cancelled") | not))]
+    | last // ""' "$1" 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------
