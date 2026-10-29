@@ -50,7 +50,11 @@ poll() {
     sleep "$POLL_INT" >/dev/null 2>&1 &
     timer=$!
     out=$("$SELF" --gen)
+    if [[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/agentop/jev.json" ]]; then
+      printf '%s\n' "$out" | "$SELF" --jev-tick >/dev/null 2>&1 &
+    fi
     sig=$(printf '%s' "$out" | cut -d$'\037' -f1-5,7-9)
+    sig+="$(cat "${XDG_STATE_HOME:-$HOME/.local/state}/agentop/ai/jev.revision" 2>/dev/null)"
     if [[ "$sig" != "$(cat "$sigf" 2>/dev/null)" ]]; then
       # 신규 waiting(HITL) 세션 감지 → 직전 스냅샷에 없던 pid 만 알림
       local nowwait prevwait newp

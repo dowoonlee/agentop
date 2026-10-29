@@ -36,7 +36,10 @@ INPUT_LIMIT = 4000
 OUTPUT_LIMIT = 400
 # Token counting is an estimate. Reserve a 25% input margin as well.
 RESERVED_INPUT = 5000
-VERSION = "1"
+VERSION = "2"
+# Shared with the jq preview reader so generated user-role records never become
+# a human request or a semantic change event.
+GENERATED_PREFIXES = tuple(json.loads((Path(__file__).with_name("generated-prefixes.json")).read_text()))
 FIELDS = ("goal", "progress", "needs_user", "evidence")
 SYSTEM = (
     "Summarize the supplied coding-session excerpts in concise Korean. "
@@ -111,8 +114,8 @@ def config():
     return cfg
 
 
-def api_key():
-    path = CONFIG / "anthropic_api_key"
+def api_key(filename="anthropic_api_key"):
+    path = CONFIG / filename
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
         with os.fdopen(fd) as stream:
@@ -121,9 +124,9 @@ def api_key():
                 raise PolicyError("API 키 파일 권한을 600으로 설정해 주세요.")
             key = stream.read(1025).strip()
     except OSError:
-        raise PolicyError("agentop --ai-init으로 API 키 파일을 만들어 주세요.") from None
+        raise PolicyError(f"API 키 파일을 초기화해 주세요: {filename}") from None
     if not key or len(key) > 1024 or not re.fullmatch(r"[A-Za-z0-9_-]+", key):
-        raise PolicyError("anthropic_api_key 파일에 API 키만 한 줄로 입력해 주세요.")
+        raise PolicyError(f"{filename} 파일에 API 키만 한 줄로 입력해 주세요.")
     return key
 
 
@@ -158,9 +161,10 @@ def totals(db, now=None):
     return day, month, *row
 
 
-def reserve(db, cfg, sid):
-    ir, outr = RATES[cfg["model"]]
-    amount = RESERVED_INPUT * ir + OUTPUT_LIMIT * outr
+def reserve(db, cfg, sid, amount=None):
+    if amount is None:
+        ir, outr = RATES[cfg["model"]]
+        amount = RESERVED_INPUT * ir + OUTPUT_LIMIT * outr
     db.execute("BEGIN IMMEDIATE")
     try:
         day, month, daily, monthly, count = totals(db)
@@ -191,7 +195,7 @@ def redact(text):
     return "".join(c for c in text if c in "\n\t" or (ord(c) >= 32 and not 127 <= ord(c) <= 159))
 
 
-def excerpt(row):
+def excerpt(row, semantic=False):
     if row.get("type") not in ("user", "assistant") or row.get("isMeta"):
         return ""
     msg = row.get("message", {})
@@ -208,7 +212,7 @@ def excerpt(row):
             kind = block.get("type")
             if kind == "text":
                 parts.append(str(block.get("text", "")))
-            elif kind == "tool_use":
+            elif kind == "tool_use" and not semantic:
                 # Do not send source code, raw shell commands or tool arguments.
                 parts.append("도구: " + str(block.get("name", "")))
             elif kind == "tool_result":
@@ -220,12 +224,12 @@ def excerpt(row):
                         r"error|fail|passed|tests?\b|exit code|오류|실패|성공", line, re.I)]
                     parts.extend(lines[-4:])
     text = "\n".join(parts).strip()
-    if text.startswith(("<system-reminder>", "<command-", "[Request interrupted", "Caveat:")):
+    if text.startswith(GENERATED_PREFIXES):
         return ""
     return redact(text)[:900]
 
 
-def snapshot(path):
+def snapshot(path, semantic=False):
     """Read bounded head/tail; do not load multi-MB transcripts into memory."""
     first = None
     recent = collections.deque(maxlen=12)
@@ -242,9 +246,12 @@ def snapshot(path):
                 row = json.loads(line)
                 if not isinstance(row, dict):
                     continue
-                text = excerpt(row)
+                text = excerpt(row, semantic=semantic)
                 if text:
-                    yield {"role": row["type"], "text": text}
+                    item = {"role": row["type"], "text": text}
+                    if semantic and isinstance(row.get("uuid"), str):
+                        item["event_id"] = row["uuid"]
+                    yield item
             except (ValueError, TypeError):
                 continue
     for item in records(head, False):

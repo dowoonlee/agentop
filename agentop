@@ -137,6 +137,11 @@ main() {
 
 
 case "${1:-}" in
+  --jev-init) jev_python init ;;
+  --jev-status) jev_python status ;;
+  --jev-tick) jev_python tick ;;
+  --jev-diff) jev_session diff "${2:-}" "${3:-}" ;;
+  --jev-analyze) jev_session analyze "${2:-}" "${3:-}" ;;
   --ai-init) ai_python init ;;
   --ai-status) ai_python status ;;
   --ai-analyze) ai_analyze "${2:-}" "${3:-}" ;;

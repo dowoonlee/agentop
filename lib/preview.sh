@@ -22,7 +22,7 @@ preview_full() {
 
   printf '%s%s%s\n' "$BLUE" "$title" "$RESET"
   printf '%s\n' "${DIM}────────────────────────────────────────${RESET}"
-  ai_block "$sid" full
+  case "$sid" in cursor:*|codex:*) ;; *) ai_block "$sid" full ;; esac
 
   if [[ "$sid" == cursor:* || "$sid" == codex:* ]]; then
     local toolname toolcol fb
@@ -50,6 +50,7 @@ preview_full() {
       if [[ "$nsub" =~ ^[0-9]+$ ]] && (( nsub > 0 )); then
         printf '%sagents %s %s %s%s%s\n' "$GRAY" "$RESET" "$AG_EMOJI" "$YELLOW" "$nsub" "$RESET"
       fi
+      codex_detail_block "$(codex_rollout_of "$pid")" full "$tty"
       if [[ "$ctoks" =~ ^[0-9]+$ && "$ccap" =~ ^[0-9]+$ && "$ccap" -gt 0 ]]; then
         printf '%sctx    %s %s  %s(%s / %s tokens)%s\n' \
           "$GRAY" "$RESET" "$(ctx_cell_cap "$ctoks" "$ccap")" "$DIM" "$ctoks" "$ccap" "$RESET"
@@ -165,17 +166,8 @@ preview_full() {
   board_block "$sid" "$cwd"
 
   local last
-  last=$(jq -rs '
-    [ .[] | select(.type=="user")
-      | select(.message.content | type=="string"
-               or (type=="array" and any(.[]; .type=="text"))) ]
-    | reverse
-    | map(.message.content
-          | if type=="string" then .
-            else [ .[] | select(.type=="text") | .text ] | join(" ") end
-          | gsub("\n"; " ") | gsub("  +"; " "))
-    | map(select(startswith("[Request interrupted") or startswith("[Request cancelled") or . == "" | not))
-    | first // ""' < "$tx" 2>/dev/null)
+  last=$(preview_last "$tx")
+  last="${last//$'\n'/ }"
   if [[ -n "$last" ]]; then
     printf '\n%s💬 last%s %s\n' "$GRAY" "$RESET" "${last:0:240}"
   fi
@@ -204,7 +196,8 @@ preview() {
   tx=$(tx_of "$cwd" "$sid")
   ecwd=$(cwd_of "$tx")
   if [[ "$sid" == codex:* ]]; then
-    codex_metrics_r "$(codex_rollout_of "$pid")"
+    local rollout; rollout=$(codex_rollout_of "$pid")
+    codex_metrics_r "$rollout"
     model="$_r"; toks="${_r4:-0}"; cap="${_r5:-$CTX_MAX}"; ecwd="${_r6:-$cwd}"
   elif [[ "$sid" == cursor:* ]]; then model='cursor-agent'
   else model=$(model_pretty "$(model_of "$tx")"); toks=$(ctx_of "$tx")
@@ -219,7 +212,15 @@ preview() {
     printf '\n%s응답 대기%s\n' "$RED" "$RESET"
     preview_text "$waiting"
   fi
-  case "$sid" in cursor:*|codex:*) ;; *) ai_block "$sid" ;; esac
+  case "$sid" in
+    codex:*)
+      codex_detail_block "$rollout" "" "$tty"
+      local nsub; nsub=$(codex_subagent_parents " $pid " | grep -c .)
+      [[ "$nsub" =~ ^[0-9]+$ && "$nsub" -gt 0 ]] && printf '\n서브에이전트 %s개\n' "$nsub"
+      ;;
+    cursor:*) ;;
+    *) ai_block "$sid" ;;
+  esac
   local rule='' i
   for ((i=0; i<pw; i++)); do rule+='─'; done
   printf '\n%s%s%s\n' "$DIM" "$rule" "$RESET"
@@ -248,7 +249,9 @@ preview() {
   fi
   srv_block "$pid" "$ecwd"
   board_block "$sid" "$cwd"
-  printf '\n%s%s%s\n' "$GRAY" "$(trunc_disp 'd 세부 정보 · a AI 분석' "$pw")" "$RESET"
+  local help='d 세부 정보 · a AI 분석'
+  case "$sid" in codex:*) help='d 세부 정보 · 로컬 기록 표시' ;; cursor:*) help='d 세부 정보' ;; esac
+  printf '\n%s%s%s\n' "$GRAY" "$(trunc_disp "$help" "$pw")" "$RESET"
 }
 
 preview_text() {
@@ -262,13 +265,9 @@ preview_text() {
 }
 
 preview_last() {
-  jq -rs '[.[] | select(.type=="user" and (.isMeta != true))
-    | .message.content
-    | if type=="string" then . elif type=="array" then
-        [.[] | select(.type=="text") | .text] | join(" ") else "" end
-    | select(. != "" and (startswith("<system-reminder>") or startswith("<command-")
-        or startswith("[Request interrupted") or startswith("[Request cancelled") | not))]
-    | last // ""' "$1" 2>/dev/null
+  local reader_dir="${LIB:-$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+  jq -Rnr --slurpfile prefixes "$reader_dir/generated-prefixes.json" \
+    -f "$reader_dir/last-request.jq" "$1" 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -489,4 +488,20 @@ activity_view() {
     printf '\n%s이 세션은 지금 돌리는 것도, 물고 있는 포트도 없습니다.%s\n' "$DIM" "$RESET"
   fi
   return 0
+}
+
+# Codex uses its own rollout schema, not a Claude transcript.
+codex_detail_block() {
+  local interpreter="${AGENTOP_JEV_PYTHON:-/usr/bin/python3}"
+  if command -v "$interpreter" >/dev/null 2>&1; then
+    if [[ -r "${1:-}" ]]; then
+      "$interpreter" "$LIB/codex-preview.py" "$1" "${2:-}"
+    elif [[ -n "${3:-}" ]]; then
+      cursor_screens "$3" | "$interpreter" "$LIB/codex-preview.py" --screen "${2:-}"
+    else
+      "$interpreter" "$LIB/codex-preview.py" "" "${2:-}"
+    fi
+  else
+    printf '\nCodex 상세 기록 표시에는 Python 3가 필요합니다.\n'
+  fi
 }
