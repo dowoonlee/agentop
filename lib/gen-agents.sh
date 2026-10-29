@@ -231,14 +231,130 @@ codex_subagent_parents() {
   return 0
 }
 
-# Resolve a live PID through the rollout file it actually has open. Never guess
-# from cwd/timestamps: multiple resumed sessions can share both.
+# codex_rollout_of <pid> [cwd] [시작 epoch] : 이 세션의 rollout 경로.
+#   1순위는 프로세스가 실제로 열고 있는 파일(lsof) — cwd·시간으로 추측하지 않는다.
+#   codex 0.164+ 는 TUI 가 rollout 을 안 열고 공유 app-server 데몬(launchd 자식,
+#   `codex app-server --listen unix:// --managed-daemon`)이 전부 연다. 그러면 lsof 로는
+#   아무것도 안 나와 모델·컨텍스트·워크트리 브랜치가 통째로 비었다 — 그때만
+#   codex_thread_rollout_r 로 떨어진다. 인자의 cwd·시작시각은 gen_codex 가 이미 구한
+#   값을 재사용하려는 것이고, 없으면 안에서 구한다 (preview 경로).
 codex_rollout_of() {
   local paths
   paths=$(lsof -a -p "$1" -Fn 2>/dev/null |
     sed -n '/^n.*\/rollout-.*\.jsonl$/s/^n//p' | sort -u)
-  [[ -n "$paths" && "$paths" != *$'\n'* ]] || return 0
-  printf '%s' "$paths"
+  if [[ -n "$paths" ]]; then
+    [[ "$paths" != *$'\n'* ]] || return 0   # 둘 이상 열린 건 데몬 — 세션이 아니다
+    printf '%s' "$paths"; return 0
+  fi
+  codex_thread_rollout_r "$1" "${2:-}" "${3:-}"
+  [[ -n "$_r" ]] && printf '%s' "$_r"
+  return 0
+}
+
+# codex_state_db_r : codex 의 상태 DB(~/.codex/state_N.sqlite). N 은 스키마 버전이라
+#   올라갈 수 있어 가장 큰 번호를 고른다.
+codex_state_db_r() {
+  local f n best=-1
+  _r=""
+  for f in "$HOME"/.codex/state_*.sqlite; do
+    [[ -f "$f" ]] || continue
+    n="${f##*/state_}"; n="${n%.sqlite}"
+    [[ "$n" =~ ^[0-9]+$ ]] || continue
+    (( n > best )) && { best=$n; _r="$f"; }
+  done
+}
+
+# codex_tui_starts_r : 라이브 codex TUI 세션들의 '시작 epoch<TAB>cwd' 목록(줄 단위).
+#   gen_codex 가 후보 루프에서 채워 두면 그대로 쓰고(폴링당 ps 한 번), preview 처럼
+#   따로 도는 프로세스에서는 여기서 ps·lsof 로 만든다. 헬퍼(app-server·sandbox)와
+#   tty 없는 GUI 프로세스는 gen_codex 와 같은 기준으로 뺀다 — 이 목록은 '같은 자리에
+#   형제 TUI 가 몇이냐' 를 세는 데 쓰여서 헬퍼가 끼면 순번이 밀린다.
+CODEX_TUI_STARTS=""
+codex_tui_starts_r() {
+  local now pid ptty etime pargs cwd
+  if [[ -z "$CODEX_TUI_STARTS" ]]; then
+    now=$(date +%s); CODEX_TUI_STARTS=$'\n'
+    while read -r pid ptty etime pargs; do
+      [[ -z "$pid" || "$ptty" == "??" ]] && continue
+      codex_helper_argv "$pargs" && continue
+      cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+      CODEX_TUI_STARTS+="$(( now - $(parse_etime "$etime") ))"$'\t'"$cwd"$'\n'
+    done < <(ps -axo pid=,tty=,etime=,comm=,args= 2>/dev/null |
+      awk '$4 ~ /(^|\/)codex$/ { $4=""; print }')
+  fi
+  _r="$CODEX_TUI_STARTS"
+}
+
+# codex_thread_rollout_r <pid> [cwd] [시작 epoch] : threads 테이블로 세션의 rollout 을
+#   고른다. 데몬 구조에서는 pid 와 thread 를 잇는 하드 링크가 디스크에 없다 — 데몬
+#   로그(logs_N.sqlite)는 thread 없는 행을 1000개로 잘라 접속 기록이 금방 사라지고,
+#   TUI 로그에는 thread id 가 안 남는다. 남는 건 시간과 자리뿐이라 이렇게 잇는다:
+#
+#   1. argv 에 `resume <uuid>` 가 있으면 그 thread (추측 없음).
+#   2. 아니면 TUI 가 뜬 직후(시작시각 -LO ~ +HI 초) 같은 cwd 에 생긴 thread —
+#      codex-tui 가 만든 사용자 thread 만, 서브에이전트 thread 는 뺀다. 같은 자리에
+#      형제 TUI 가 그 창 안에 여럿 떴으면(연달아 띄운 경우) 시작 순서대로 생성
+#      순서의 thread 를 받는다 — 먼저 뜬 쪽이 먼저 만든다.
+#   3. /new 로 갈아탔으면 이전 thread 의 마지막 갱신 직후(NEW 초 안)에 같은 cwd 에
+#      새 thread 가 생긴다. 그 사슬을 끝까지 따라간다. 단 같은 자리의 라이브 TUI
+#      시작 창에 드는 thread 는 남의 것이라 거기서 멈춘다.
+#
+#   실측(2026-10): 시작→생성 2~6초, /new 는 갱신→생성 4초. `resume --last` 처럼
+#   옛 thread 를 이어받은 세션은 2 에서 못 잡혀 빈 값 — 그러면 호출자가 프로세스
+#   cwd 로 떨어져 지금까지와 같은 행이 된다. 빈 값일 때도 _r 은 꼭 비운다 —
+#   codex_tui_starts_r 이 _r 을 쓰고 지나가므로 흘러나가면 경로 자리에 목록이 박힌다.
+codex_thread_rollout_r() {
+  local pid="${1:-}" cwd="${2:-}" start="${3:-}" db args re id="" lo hi rank=0 s c
+  local starts cwdq rows line cre upd ncre nupd next hop=0 out=""
+  _r=""
+  [[ -n "$pid" ]] || return 0
+  command -v sqlite3 >/dev/null 2>&1 || return 0
+  codex_state_db_r; db="$_r"; _r=""
+  [[ -n "$db" ]] || return 0
+  sq() { sqlite3 -readonly -cmd '.timeout 300' "$db" "$1" 2>/dev/null; }
+
+  args=$(ps -o args= -p "$pid" 2>/dev/null)
+  re='(^|[[:space:]])resume[[:space:]]+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
+  [[ "$args" =~ $re ]] && id="${BASH_REMATCH[2]}"
+
+  if [[ -z "$id" ]]; then
+    [[ -n "$cwd" && "$cwd" != "?" ]] || cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+    [[ -n "$cwd" ]] || return 0
+    [[ "$start" =~ ^[0-9]+$ ]] || start=$(( $(date +%s) - $(parse_etime "$(ps -o etime= -p "$pid" 2>/dev/null)") ))
+    lo=$(( start - CDX_THREAD_LAG_LO )); hi=$(( start + CDX_THREAD_LAG_HI ))
+    codex_tui_starts_r; starts="$_r"; _r=""
+    while IFS=$'\t' read -r s c; do
+      [[ -n "$s" && "$c" == "$cwd" ]] || continue
+      (( s >= lo && s < start )) && rank=$(( rank + 1 ))
+    done <<< "$starts"
+    cwdq="${cwd//\'/\'\'}"
+    rows=$(sq "select id||' '||created_at||' '||updated_at from threads
+      where originator='codex-tui' and coalesce(thread_source,'')<>'subagent'
+        and cwd='$cwdq' and created_at between $lo and $hi order by created_at, id")
+    [[ -n "$rows" ]] || return 0
+    line=$(printf '%s\n' "$rows" | sed -n "$((rank + 1))p")
+    [[ -n "$line" ]] || return 0
+    read -r id cre upd <<< "$line"
+    # /new 사슬
+    while (( hop++ < CDX_THREAD_HOP_MAX )); do
+      next=$(sq "select id||' '||created_at||' '||updated_at from threads
+        where originator='codex-tui' and coalesce(thread_source,'')<>'subagent'
+          and cwd='$cwdq' and created_at > $cre
+          and created_at between $(( upd - CDX_THREAD_LAG_LO )) and $(( upd + CDX_THREAD_NEW_LAG ))
+        order by created_at limit 1")
+      [[ -n "$next" ]] || break
+      read -r next ncre nupd <<< "$next"
+      while IFS=$'\t' read -r s c; do
+        [[ -n "$s" && "$c" == "$cwd" ]] || continue
+        (( ncre >= s - CDX_THREAD_LAG_LO && ncre <= s + CDX_THREAD_LAG_HI )) && { next=""; break; }
+      done <<< "$starts"
+      [[ -n "$next" ]] || break
+      id="$next"; cre="$ncre"; upd="$nupd"
+    done
+  fi
+  out=$(sq "select rollout_path from threads where id='$id'")
+  [[ -n "$out" && -r "$out" ]] && _r="$out"
+  return 0
 }
 
 # Only extract monitoring fields; prompts and tool output are never returned.
@@ -405,6 +521,10 @@ gen_codex() {
   # 오탐하지 않고, 절대경로로 나올 경우도 함께 받는다.
   done < <(ps -axo pid=,comm= 2>/dev/null | awk '$2 ~ /(^|\/)codex$/ { print $1 }')
   (( ${#pids[@]} )) || return 0
+  # rollout 을 threads 테이블로 찾을 때 '형제 TUI' 를 세는 집합 — 방금 거른 세션들
+  # 그대로다. 여기서 채워 두면 codex_tui_starts_r 이 ps 를 다시 안 돈다.
+  CODEX_TUI_STARTS=$'\n'
+  local k; for k in "${!pids[@]}"; do CODEX_TUI_STARTS+="$(( ${starteds[$k]} / 1000 ))"$'\t'"${cwds[$k]}"$'\n'; done
 
   local screens; screens=$(cursor_screens "${ttys[@]}")   # 화면 캡처 헬퍼는 cursor 와 공용
 
@@ -425,7 +545,7 @@ gen_codex() {
     pid="${pids[$i]}"; tty="${ttys[$i]}"; cwd="${cwds[$i]}"
     dir=$(basename "$cwd" 2>/dev/null)
     proj=$(git_root "$cwd"); proj="${proj:-$cwd}"
-    codex_metrics_r "$(codex_rollout_of "$pid")"
+    codex_metrics_r "$(codex_rollout_of "$pid" "$cwd" "$(( ${starteds[$i]} / 1000 ))")"
     model="$_r"; ctoks="$_r4"; ccap="$_r5"; ecwd="$_r6"
     ctx_cell_cap_r "$ctoks" "$ccap"; ctxc="$_r"
     # 실효 cwd — '지금 어디서 일하는지'. 프로세스 cwd 도 turn_context.cwd 도 세션을

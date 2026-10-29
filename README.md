@@ -389,6 +389,7 @@ ln -s /path/to/agentop/agentop ~/.local/bin/  # 심볼릭 링크 (이중 링크�
 - `~/.claude/sessions/<pid>.json` — `waitingFor` 폴백
 - `~/.claude/projects/…/<sid>.jsonl` — 모델, 권한 모드, 컨텍스트 토큰, 서브에이전트, 백그라운드 태스크
 - Codex 프로세스가 열고 있는 `rollout-*.jsonl` — 최신 `turn_context`와 `token_count`에서 모델·승인 정책·샌드박스·컨텍스트 사용량을 읽습니다. 캐시 토큰은 입력 토큰에 포함되므로 중복 합산하지 않습니다
+- `~/.codex/state_N.sqlite`의 `threads` — codex 0.164+는 TUI가 rollout을 직접 열지 않고 공유 app-server 데몬이 열어 `lsof`로는 안 잡힙니다. 그때만 TUI가 뜬 직후(-3~+60초) 같은 cwd에 생긴 사용자 thread를 고르고, `/new`로 갈아탄 thread는 이전 thread의 마지막 갱신 직후(30초 안)에 생긴 것으로 잇습니다. argv에 `resume <uuid>`가 있으면 그 thread입니다. `resume --last`처럼 옛 thread를 이어받은 세션은 못 잡아 프로세스 cwd로 떨어집니다
 - `lsof` + `ps` — 세션이 물고 있는 리스닝 포트(🌐). 목록 폴링마다 각 1회
 - `docker ps` — compose 컨테이너(🐳). 캐시 한 벌을 목록·상세가 같이 읽고, 갱신은 백그라운드
 - iTerm2 화면 텍스트(AppleScript) — cursor-agent / codex 상태 판정

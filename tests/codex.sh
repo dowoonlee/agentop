@@ -86,4 +86,51 @@ codex_metrics_r "$cwdfix"
 codex_metrics_r "$cwdfix"
 [[ "$_r6" == "$repo" ]] || { echo "폴백(turn_context): '$_r6'" >&2; exit 1; }
 
+# --- threads 테이블 폴백 (codex 0.164+ 데몬 구조) ---
+# TUI 가 rollout 을 안 열 때 codex_thread_rollout_r 이 '시작 직후 같은 cwd 에 생긴
+# thread' 를 고르고 /new 사슬을 따라가는지. ps·lsof 는 위에서 스텁됐고 DB 는 임시.
+tdb=$(mktemp -d)
+trap 'rm -rf "$fixture" "$cwdfix" "$tree" "$tdb"' EXIT
+tdbf="$tdb/state_7.sqlite"; mkdir -p "$tdb/r"
+sqlite3 "$tdbf" "create table threads (id text primary key, cwd text, originator text, thread_source text, created_at integer, updated_at integer, rollout_path text)"
+ins() {  # <id> <cwd> <source> <created> <updated> <rollout명>
+  : > "$tdb/r/$6.jsonl"
+  sqlite3 "$tdbf" "insert into threads values ('$1','$2','codex-tui','$3',$4,$5,'$tdb/r/$6.jsonl')"
+}
+T=1000000; uc=01a10000-0000-7000-8000-000000000003
+ins A /w user      $((T+3))   $((T+500))  a
+ins S /w subagent  $((T+4))   $((T+50))   s     # 서브에이전트 thread — 후보 아님
+ins D /w user      $((T+6))   $((T+700))  d     # 1초 뒤 뜬 형제 TUI 의 thread
+ins B /w user      $((T+505)) $((T+900))  b     # A 에서 /new
+ins $uc /w user    $((T+904)) $((T+2000)) c     # B 에서 /new
+ins X /x user      $((T+2))   $((T+10))   x     # 다른 cwd
+codex_state_db_r() { _r="$tdbf"; }   # db 는 함수 안 local 이라 다른 이름
+ps() { printf '%s\n' "${PSARGS:-codex --yolo}"; }
+st() { local o=$'\n' a; for a in "$@"; do o+="${a%%:*}"$'\t'"${a#*:}"$'\n'; done; CODEX_TUI_STARTS="$o"; }
+st "$T:/w" "$((T+1)):/w"
+codex_thread_rollout_r 201 /w "$T"
+[[ "${_r##*/}" == c.jsonl ]] || { echo "/new 사슬: '${_r##*/}'" >&2; exit 1; }
+codex_thread_rollout_r 202 /w "$((T+1))"
+[[ "${_r##*/}" == d.jsonl ]] || { echo "형제 순번: '${_r##*/}'" >&2; exit 1; }
+codex_thread_rollout_r 203 /x "$((T+1))"
+[[ "${_r##*/}" == x.jsonl ]] || { echo "다른 cwd: '${_r##*/}'" >&2; exit 1; }
+codex_thread_rollout_r 204 /w "$((T+5000))"
+[[ -z "$_r" ]] || { echo "창 밖 시작은 빈 값이어야: '$_r'" >&2; exit 1; }
+# 라이브 TUI 의 시작 창에 든 thread 는 남의 것 — 사슬이 거기서 멈춘다.
+st "$T:/w" "$((T+1)):/w" "$((T+903)):/w"
+codex_thread_rollout_r 201 /w "$T"
+[[ "${_r##*/}" == b.jsonl ]] || { echo "사슬 가드: '${_r##*/}'" >&2; exit 1; }
+# argv 의 resume <uuid> 는 추측 없이 그 thread.
+PSARGS="codex --yolo resume $uc" codex_thread_rollout_r 205 /x "$((T+5000))"
+[[ "${_r##*/}" == c.jsonl ]] || { echo "resume argv: '${_r##*/}'" >&2; exit 1; }
+# rollout 파일이 없으면 빈 값 — 호출자가 프로세스 cwd 로 떨어진다.
+rm "$tdb/r/d.jsonl"
+codex_thread_rollout_r 202 /w "$((T+1))"
+[[ -z "$_r" ]] || { echo "없는 rollout: '$_r'" >&2; exit 1; }
+# lsof 가 비면 codex_rollout_of 가 이 폴백으로 떨어진다 (lsof 스텁은 104 에 빈 값).
+st "$T:/w"
+[[ "$(codex_rollout_of 104 /w "$T")" == "$tdb/r/c.jsonl" ]] || { echo "codex_rollout_of 폴백" >&2; exit 1; }
+unset -f ps
+
 printf 'Codex regression checks passed\n'
+

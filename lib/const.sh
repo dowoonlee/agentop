@@ -151,6 +151,15 @@ CUR_TAIL=25
 CDX_PAT_PERM='Allow Codex to |Approve app tool call\?|Yes, proceed|tell Codex what to do differently'
 CDX_PAT_BUSY='Working \([0-9]+|[Ee]sc to interrupt|to interrupt and send'
 CDX_TAIL=25
+# codex 0.164+ 는 TUI 가 rollout 을 직접 안 열어(공유 app-server 데몬이 연다) pid 로
+# 못 찾는다. 그때 codex 의 threads 테이블에서 'TUI 가 뜬 직후 같은 cwd 에 생긴
+# thread' 를 고른다 — 시작시각 기준 [-LO, +HI] 초 창. 데몬이 콜드스타트면 몇 초 더
+# 걸리므로 HI 를 넉넉히 둔다. /new 로 갈아탄 thread 는 이전 thread 의 마지막 갱신
+# 뒤 NEW 초 안에 생긴 것으로 잇는다.
+CDX_THREAD_LAG_LO=3
+CDX_THREAD_LAG_HI=60
+CDX_THREAD_NEW_LAG=30
+CDX_THREAD_HOP_MAX=20
 
 # ---- 목록 자동 갱신 (poll) ----
 # 갱신 주기(초). poll 은 이 길이의 타이머를 gen 과 '겹쳐' 돌리므로, gen 이 주기
